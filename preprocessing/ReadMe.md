@@ -16,3 +16,4 @@ Follow the steps below to generate the AlphaEarth dataset for Alberta (2020):
 ### Notes
 - Ensure all export tasks in Google Earth Engine have completed before running the Python scripts.
 - All tiles should have the same CRS, resolution, and naming convention.
+- Put all the bands in the dataset folder
