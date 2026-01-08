@@ -8,5 +8,5 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
 
 3- Save the downloaded LULC map in GroundTruth_Landsat_Canada folder
 
-4- 
+4- Then run the clip_Landsat8_30m_GT.py to get clipped ground truth LCLU map of Alberta.
 
