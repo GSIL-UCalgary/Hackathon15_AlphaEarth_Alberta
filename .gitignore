@@ -1,3 +1,4 @@
 preprocessing/
 GroundTruth_Landsat_Canada/landcover-2020-classification.tif
 GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED.tif
+train_val_test_patches/
