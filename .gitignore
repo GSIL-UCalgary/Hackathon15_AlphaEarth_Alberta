@@ -1,4 +1,8 @@
 preprocessing/
 GroundTruth_Landsat_Canada/landcover-2020-classification.tif
 GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED.tif
-train_val_test_patches/
+train_val_test_patches/abundance_maps/
+train_val_test_patches/patches/
+train_val_test_patches/LC_filtered.tif
+train_val_test_patches/LC_remapped.tif
+

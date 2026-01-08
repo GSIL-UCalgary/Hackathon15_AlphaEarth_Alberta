@@ -1,0 +1,78 @@
+{
+  "num_classes": 13,
+  "new_labels": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "class_mapping": {
+    "0": 1,
+    "1": 2,
+    "2": 5,
+    "3": 6,
+    "4": 8,
+    "5": 10,
+    "6": 12,
+    "7": 14,
+    "8": 15,
+    "9": 16,
+    "10": 17,
+    "11": 18,
+    "12": 19
+  },
+  "class_names": {
+    "0": "Temperate needleleaf forest",
+    "1": "Sub-polar taiga forest",
+    "2": "Temperate broadleaf forest",
+    "3": "Mixed forest",
+    "4": "Temperate shrubland",
+    "5": "Temperate grassland",
+    "6": "Polar grassland-lichen",
+    "7": "Wetland",
+    "8": "Cropland",
+    "9": "Barren lands",
+    "10": "Urban",
+    "11": "Water",
+    "12": "Snow/ice"
+  },
+  "window_size": 224,
+  "background_label": -99,
+  "common_labels": {
+    "train": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\train\\labels",
+    "val": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\val\\labels",
+    "test": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\test\\labels"
+  },
+  "sensors": {
+    "landsat8": {
+      "bands": 6,
+      "image_dtype": "uint8",
+      "train_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\train\\landsat8\\img",
+      "val_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\val\\landsat8\\img",
+      "test_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\test\\landsat8\\img"
+    },
+    "sentinel2": {
+      "bands": 10,
+      "image_dtype": "uint8",
+      "train_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\train\\sentinel2\\img",
+      "val_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\val\\sentinel2\\img",
+      "test_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\test\\sentinel2\\img"
+    },
+    "alphaearth": {
+      "bands": 64,
+      "image_dtype": "uint8",
+      "train_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\train\\alphaearth\\img",
+      "val_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\val\\alphaearth\\img",
+      "test_img_path": "D:\\Hackathon15_AlphaEarth\\train_val_test_patches\\patches\\test\\alphaearth\\img"
+    }
+  }
+}
