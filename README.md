@@ -10,3 +10,20 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
 
 4- Then run the clip_Landsat8_30m_GT.py to get clipped ground truth LCLU map of Alberta.
 
+```
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="assets/Sentinel2.png.png" width="250"/>
+    </td>
+    <td align="center">
+      <img src="assets/Landsat8.png" width="250"/>
+    </td>
+    <td align="center">
+      <img src="assets/AlphaEarth.png" width="250"/>
+    </td>
+  </tr>
+</table>
+
+
