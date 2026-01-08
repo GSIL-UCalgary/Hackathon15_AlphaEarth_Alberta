@@ -32,7 +32,7 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
 
 ---
 5- run extract_patches_alldatasets.py to get train, validation, and test patches of Landsat-8, Sentinel-2, and AlphaEarth datasets. It creates train_val_test_patches folder with the following structure:
-
+```
 train_val_test_patches/
 ├── LC_remapped.tif
 ├── LC_filtered.tif
@@ -69,4 +69,4 @@ train_val_test_patches/
 │   └── test/
 │       └── (same structure as `train`)
 
-
+```
