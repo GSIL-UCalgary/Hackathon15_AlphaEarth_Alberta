@@ -15,19 +15,19 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
 <table>
   <tr>
     <td align="center" valign="top">
-      <img src="asset/Sentinel2.png" width="250"/><br/>
+      <img src="asset/Sentinel2.png" width="250" height="250" style="object-fit:contain;"/>
       <b>Sentinel-2</b>
     </td>
     <td align="center" valign="top">
-      <img src="asset/Landsat8.png" width="250"/><br/>
+      <img src="asset/Landsat8.png" width="250" height="250" style="object-fit:contain;"/>
       <b>Landsat-8</b>
     </td>
     <td align="center" valign="top">
-      <img src="asset/AlphaEarth.png" width="250"/><br/>
+      <img src="asset/AlphaEarth.png" width="250" height="250" style="object-fit:contain;"/>
       <b>AlphaEarth</b>
     </td>
     <td align="center" valign="top">
-      <img src="asset/GT_Alberta_2020.png" width="250"/><br/>
+      <img src="asset/GT_Alberta_2020.png" width="250" height="250" style="object-fit:contain;"/>
       <b>Ground Truth</b>
     </td>
     <td align="center" valign="top">
