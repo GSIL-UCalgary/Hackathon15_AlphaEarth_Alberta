@@ -27,6 +27,10 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
       <img src="asset/AlphaEarth.png" width="250"/><br/>
       <b>AlphaEarth</b>
     </td>
+     <td align="center">
+      <img src="asset/GT_Alberta_2020.png" width="250"/><br/>
+      <b>AlphaEarth</b>
+    </td>
   </tr>
 </table>
 
