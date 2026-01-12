@@ -36,12 +36,25 @@ pip install -r requirements.txt
 
 2- Save the downloaded LULC map in `GroundTruth_Landsat_Canada` folder
 
-1- Run preprocessing scripts
+3- Run preprocessing scripts
 ```
-# Clip Landsat8 ground truth
-python preprocessing/clip_Landsat8_30m_GT.py
+python GroundTruth_Landsat_Canada/clip_Landsat8_30m_GT.py
 
-# Extract patches for all datasets
+```
+
+4- Download AlphaEarth tiles images using preprocessing/AlphaEarth_Dataset/Alberta_ALphaEarth_2020.js in GEE code editor
+
+5- Then run the codes below in order to get images
+
+```
+python preprocessing/AlphaEarth_Dataset/merging_tiles_AlphaEarth_30m_01.py
+python preprocessing/AlphaEarth_Dataset/clip_merged_AlphaEarth_30m_images_02.py
+python preprocessing/AlphaEarth_Dataset/stack_clipped_AlphaEarth_30m_images_03.py
+```
+5- Do the same process for Landsat-8 and Sentinel-2 datasets
+
+6- Extract patches for all datasets
+```
 python preprocessing/extract_patches_alldatasets.py
 ```
 
@@ -71,10 +84,9 @@ python preprocessing/extract_patches_alldatasets.py
     </td>
   </tr>
 </table>
-
-
 ---
-5- run extract_patches_alldatasets.py to get train, validation, and test patches of Landsat-8, Sentinel-2, and AlphaEarth datasets. It creates train_val_test_patches folder with the following structure:
+
+### 3. Dataset Structure
 ```
 train_val_test_patches/
 ├── LC_remapped.tif
