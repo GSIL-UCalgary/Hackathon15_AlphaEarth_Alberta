@@ -84,6 +84,7 @@ python preprocessing/extract_patches_alldatasets.py
     </td>
   </tr>
 </table>
+
 ---
 
 ### 3. Dataset Structure
