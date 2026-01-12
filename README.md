@@ -16,7 +16,7 @@ The project implements a comprehensive training pipeline for multi-sensor semant
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/GSIL-UCalgary/Hackathon15_AlphaEarth_Alberta.git
 cd Hackathon15_AlphaEarth_Alberta
 
 # Create and activate conda environment (recommended)
@@ -27,6 +27,7 @@ conda activate alphaearth
 pip install -r requirements.txt
 
 ---
+```
 
 ### 2. Data Processing
 
