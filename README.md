@@ -10,6 +10,11 @@ The project implements a comprehensive training pipeline for multi-sensor semant
 - Comprehensive metrics and experiment tracking with Weights & Biases
 - Automatic mixed precision training and advanced data augmentation
 
+## Weights & Biases Integration
+
+The training script automatically handles WandB authentication:
+Create wandb_api_key.txt in the project root with your API key.
+
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
@@ -128,4 +133,17 @@ train_val_test_patches/
 │   └── test/
 │       └── (same structure as `train`)
 
+```
+
+### Training
+
+```
+# Basic training with Landsat-8
+python train.py --config config/landsat_config.yaml
+
+# Train with Sentinel-2
+python train.py --config config/sentinel_config.yaml
+
+# Train with AlphaEarth
+python train.py --config config/alphaearth_config.yaml
 ```
