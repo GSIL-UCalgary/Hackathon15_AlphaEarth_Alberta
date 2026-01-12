@@ -32,7 +32,7 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
       <b>Ground Truth</b>
     </td>
     <td align="center">
-      <img src="asset/colro index.png" width="250" height="350" /><br/>
+      <img src="asset/colro index.png" width="250" height="550" /><br/>
       <b>Color Index</b>
     </td>
   </tr>
