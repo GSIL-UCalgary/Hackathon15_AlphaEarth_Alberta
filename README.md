@@ -12,31 +12,31 @@ In this repository, the Alpha Earth dataset for Alberta in 2020 is used to evalu
 4- Then run the clip_Landsat8_30m_GT.py to get clipped ground truth LCLU map of Alberta.
 
 ---
-
 <table>
   <tr>
-    <td align="center">
-      <img src="asset/Sentinel2.png" width="250"  /><br/>
+    <td align="center" valign="top">
+      <img src="asset/Sentinel2.png" width="250"/><br/>
       <b>Sentinel-2</b>
     </td>
-    <td align="center">
-      <img src="asset/Landsat8.png" width="250"  /><br/>
+    <td align="center" valign="top">
+      <img src="asset/Landsat8.png" width="250"/><br/>
       <b>Landsat-8</b>
     </td>
-    <td align="center">
-      <img src="asset/AlphaEarth.png" width="250" /><br/>
+    <td align="center" valign="top">
+      <img src="asset/AlphaEarth.png" width="250"/><br/>
       <b>AlphaEarth</b>
     </td>
-    <td align="center">
-      <img src="asset/GT_Alberta_2020.png" width="250"  /><br/>
+    <td align="center" valign="top">
+      <img src="asset/GT_Alberta_2020.png" width="250"/><br/>
       <b>Ground Truth</b>
     </td>
-    <td align="center">
-      <img src="asset/colro index.png" width="250" /><br/>
+    <td align="center" valign="top">
+      <img src="asset/colro index.png" width="250"/><br/>
       <b>Color Index</b>
     </td>
   </tr>
 </table>
+
 
 ---
 5- run extract_patches_alldatasets.py to get train, validation, and test patches of Landsat-8, Sentinel-2, and AlphaEarth datasets. It creates train_val_test_patches folder with the following structure:
