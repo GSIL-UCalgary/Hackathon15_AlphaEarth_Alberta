@@ -1,6 +1,6 @@
 """
 Multi-sensor semantic segmentation training pipeline
-Supports multiple models, metrics, and Weights & Biases logging
+Supports multiple models with comprehensive metrics and Weights & Biases logging
 """
 
 import os
@@ -11,16 +11,16 @@ from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import wandb
 from datetime import datetime
-import time
 import json
-import matplotlib.pyplot as plt
 from pathlib import Path
 import copy
 from tqdm import tqdm
 import random
 from sklearn.metrics import confusion_matrix
-import seaborn as sns
 from torch.cuda.amp import GradScaler, autocast
+import argparse
+import yaml
+import platform
 
 # Import your models
 from models import (
@@ -38,6 +38,79 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 set_seed(42)
+
+# ==================== WANDB API KEY SETUP ====================
+def setup_wandb_api_key(api_key_path=None, force_login=False):
+    """Setup WandB API key from file or environment, or login interactively"""
+    
+    # Check if already logged in
+    if not force_login and wandb.api.api_key:
+        print("✓ WandB already logged in")
+        return True
+    
+    # Default path if not specified
+    if api_key_path is None:
+        # Try common locations
+        possible_paths = [
+            'wandb_api_key.txt',
+            '.wandb_api_key.txt',
+            'config/wandb_api_key.txt',
+            '../wandb_api_key.txt',
+            os.path.expanduser('~/.wandb_api_key.txt'),
+            os.path.expanduser('~/.config/wandb/api_key'),
+        ]
+
+        for path in possible_paths:
+            if os.path.exists(path):
+                api_key_path = path
+                break
+    
+    # Read API key from file if path exists
+    if api_key_path and os.path.exists(api_key_path):
+        try:
+            with open(api_key_path, 'r') as f:
+                api_key = f.read().strip()
+            
+            # Set environment variable
+            os.environ['WANDB_API_KEY'] = api_key
+            print(f" Loaded WandB API key from: {api_key_path}")
+            return True
+        except Exception as e:
+            print(f" Could not read WandB API key from {api_key_path}: {e}")
+    
+    # Check if API key is already in environment
+    if 'WANDB_API_KEY' in os.environ:
+        print(" Using WandB API key from environment variable")
+        return True
+    
+    # Try to get API key from wandb config file
+    wandb_config_path = os.path.expanduser('~/.netrc')
+    if os.path.exists(wandb_config_path):
+        try:
+            import netrc
+            secrets = netrc.netrc(wandb_config_path)
+            api_key = secrets.authenticators('api.wandb.ai')[2]
+            if api_key:
+                os.environ['WANDB_API_KEY'] = api_key
+                print(" Loaded WandB API key from ~/.netrc")
+                return True
+        except:
+            pass
+    
+    # If no API key found, try to login interactively
+    print("No WandB API key found. Attempting interactive login...")
+    try:
+        wandb.login()
+        print(" WandB login successful!")
+        return True
+    except Exception as e:
+        print(f" WandB login failed: {e}")
+        print("You can continue without WandB or set up API key manually.")
+        return False
+
+# Setup WandB API key at the start
+setup_wandb_api_key()
+
 
 class MultisensorDataset(Dataset):
     """Dataset for multi-sensor semantic segmentation"""
@@ -77,11 +150,12 @@ class MultisensorDataset(Dataset):
         img_path = self.img_files[idx]
         label_path = self.label_files[idx]
         
-        # Read GeoTIFF files (simplified - you might want to use rasterio or gdal)
-        # For now, assume they're already preprocessed to numpy arrays
-        # You'll need to implement proper GeoTIFF reading
-        image = self.load_geotiff(img_path)  # Shape: (C, H, W)
-        label = self.load_geotiff(label_path)  # Shape: (H, W)
+        # Read GeoTIFF files using rasterio
+        import rasterio
+        with rasterio.open(img_path) as src:
+            image = src.read()  # Shape: (C, H, W)
+        with rasterio.open(label_path) as src:
+            label = src.read(1)  # Shape: (H, W)
         
         # Convert to tensors
         image = torch.from_numpy(image).float()
@@ -92,22 +166,14 @@ class MultisensorDataset(Dataset):
             image, label = self.transform(image, label)
         
         return image, label
-    
-    def load_geotiff(self, path):
-        """Load GeoTIFF file as numpy array"""
-        # Implement using rasterio or gdal
-        # For now, return dummy data
-        import rasterio
-        with rasterio.open(path) as src:
-            data = src.read()
-        return data
 
 class SegmentationMetrics:
-    """Calculate various segmentation metrics"""
+    """Calculate comprehensive segmentation metrics"""
     
-    def __init__(self, num_classes, ignore_index=-99):
+    def __init__(self, num_classes, ignore_index=-99, class_names=None):
         self.num_classes = num_classes
         self.ignore_index = ignore_index
+        self.class_names = class_names or [f"Class_{i}" for i in range(num_classes)]
         self.confusion_matrix = np.zeros((num_classes, num_classes))
         
     def update(self, pred, target):
@@ -140,9 +206,6 @@ class SegmentationMetrics:
         # Avoid division by zero
         epsilon = 1e-10
         
-        # Per-class accuracy
-        accuracy_per_class = tp / (tp + fp + fn + epsilon)
-        
         # Per-class precision
         precision_per_class = tp / (tp + fp + epsilon)
         
@@ -157,7 +220,6 @@ class SegmentationMetrics:
         
         # Overall metrics
         metrics['overall_accuracy'] = np.sum(tp) / np.sum(self.confusion_matrix + epsilon)
-        metrics['mean_accuracy'] = np.mean(accuracy_per_class)
         metrics['mean_precision'] = np.mean(precision_per_class)
         metrics['mean_recall'] = np.mean(recall_per_class)
         metrics['mean_f1'] = np.mean(f1_per_class)
@@ -167,26 +229,44 @@ class SegmentationMetrics:
         freq = np.sum(self.confusion_matrix, axis=1) / (np.sum(self.confusion_matrix) + epsilon)
         metrics['freq_weighted_iou'] = np.sum(freq * iou_per_class)
         
-        # Per-class metrics for logging
+        # Per-class metrics for detailed analysis
         for i in range(self.num_classes):
-            metrics[f'class_{i}_iou'] = iou_per_class[i]
-            metrics[f'class_{i}_f1'] = f1_per_class[i]
-            metrics[f'class_{i}_precision'] = precision_per_class[i]
-            metrics[f'class_{i}_recall'] = recall_per_class[i]
+            metrics[f'{self.class_names[i]}_iou'] = iou_per_class[i]
+            metrics[f'{self.class_names[i]}_f1'] = f1_per_class[i]
+            metrics[f'{self.class_names[i]}_precision'] = precision_per_class[i]
+            metrics[f'{self.class_names[i]}_recall'] = recall_per_class[i]
+            metrics[f'{self.class_names[i]}_support'] = int(tp[i] + fn[i])
+        
+        # Kappa coefficient
+        total = np.sum(self.confusion_matrix)
+        if total > 0:
+            pe = np.sum(np.sum(self.confusion_matrix, axis=0) * np.sum(self.confusion_matrix, axis=1)) / (total ** 2)
+            metrics['kappa'] = (metrics['overall_accuracy'] - pe) / (1 - pe + epsilon)
+        else:
+            metrics['kappa'] = 0.0
         
         return metrics
     
     def reset(self):
         self.confusion_matrix = np.zeros((self.num_classes, self.num_classes))
 
-def create_model(model_name, num_classes, sensor_name, config):
-    """Create model based on name and configuration"""
+def create_model(model_name, sensor_name, config):
+    """Create model based on name and sensor configuration"""
+    
+    # Get number of bands from your config
+    bands_config = {
+        'landsat8': 6,
+        'sentinel2': 10,
+        'alphaearth': 64
+    }
+    
+    input_channels = bands_config[sensor_name]
+    num_classes = 13  # From your config
     
     model_config = {
         'num_classes': num_classes,
-        'input_channels': config['sensors'][sensor_name]['bands'],
-        'img_size': 224,  # Your patch size
-        'ignore_index': -99
+        'input_channels': input_channels,
+        'img_size': 224,  # From your config
     }
     
     if model_name == 'MIMUNet':
@@ -209,29 +289,40 @@ def create_model(model_name, num_classes, sensor_name, config):
         raise ValueError(f"Unknown model: {model_name}")
 
 class Trainer:
-    """Main training class"""
+    """Main training class with Config Saving"""
     
     def __init__(self, config):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
-        # Initialize wandb
+        # Create output directory with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{timestamp}"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save configuration files immediately
+        self.save_configuration()
+        
+        # Initialize wandb AFTER saving config
         if config['use_wandb']:
             wandb.init(
                 project=config['wandb_project'],
-                name=f"{config['model_name']}_{config['sensor_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                config=config
+                entity=config.get('wandb_entity', None),
+                name=f"{config['model_name']}_{config['sensor_name']}_{timestamp}",
+                config=config,
+                tags=[config['model_name'], config['sensor_name'], "segmentation"],
+                dir=str(self.output_dir)  # Save wandb logs to experiment directory
             )
+            print(f"WandB Run: {wandb.run.url}")
         
         # Load dataset config
         with open(config['dataset_config'], 'r') as f:
             self.dataset_config = json.load(f)
         
-        # Create model
+        # Create model - now using your specific config
         self.model = create_model(
             config['model_name'],
-            self.dataset_config['num_classes'],
             config['sensor_name'],
             self.dataset_config
         ).to(self.device)
@@ -243,6 +334,10 @@ class Trainer:
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
         
+        # Log model architecture to wandb
+        if config['use_wandb']:
+            wandb.watch(self.model, log="parameters", log_freq=100)
+        
         # Loss function
         if config['loss_fn'] == 'cross_entropy':
             self.criterion = nn.CrossEntropyLoss(
@@ -250,10 +345,12 @@ class Trainer:
                 weight=config.get('class_weights', None)
             )
         elif config['loss_fn'] == 'focal':
-            from focal_loss import FocalLoss
-            self.criterion = FocalLoss(
-                ignore_index=config['ignore_index']
-            )
+            try:
+                from focal_loss.focal_loss import FocalLoss
+                self.criterion = FocalLoss(ignore_index=config['ignore_index'])
+            except ImportError:
+                print("Warning: focal-loss-torch not installed. Using cross entropy instead.")
+                self.criterion = nn.CrossEntropyLoss(ignore_index=config['ignore_index'])
         else:
             raise ValueError(f"Unknown loss function: {config['loss_fn']}")
         
@@ -304,33 +401,163 @@ class Trainer:
         # Mixed precision training
         self.scaler = GradScaler() if config['use_amp'] else None
         
-        # Metrics
+        # Get class names from your dataset config
+        class_names = []
+        if 'class_names' in self.dataset_config:
+            # Extract class names in order
+            class_names = [self.dataset_config['class_names'][str(i)] for i in range(self.dataset_config['num_classes'])]
+        else:
+            class_names = [f"Class_{i}" for i in range(self.dataset_config['num_classes'])]
+        
+        # Metrics - using 13 classes from your config
         self.metrics = SegmentationMetrics(
-            num_classes=self.dataset_config['num_classes'],
-            ignore_index=config['ignore_index']
+            num_classes=self.dataset_config['num_classes'],  # Should be 13
+            ignore_index=config['ignore_index'],
+            class_names=class_names
         )
         
         # Best model tracking
         self.best_val_iou = 0
         self.best_model_state = None
         
-        # Create output directory
-        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Save initial configuration again (with model info)
+        self.save_configuration(with_model_info=True)
+    
+    def save_configuration(self, with_model_info=False):
+        """Save configuration as both .txt and .json files"""
+        
+        # Save as JSON (machine-readable)
+        config_json_path = self.output_dir / "config.json"
+        with open(config_json_path, 'w') as f:
+            # Convert any non-serializable objects
+            serializable_config = {}
+            for key, value in self.config.items():
+                if isinstance(value, (str, int, float, bool, type(None))):
+                    serializable_config[key] = value
+                else:
+                    serializable_config[key] = str(value)
+            json.dump(serializable_config, f, indent=2)
+        print(f"✓ Configuration saved as JSON: {config_json_path}")
+        
+        # Save as TXT (human-readable)
+        config_txt_path = self.output_dir / "config.txt"
+        with open(config_txt_path, 'w') as f:
+            self._write_config_txt(f, with_model_info)
+        print(f"✓ Configuration saved as TXT: {config_txt_path}")
+    
+    def _write_config_txt(self, file_obj, with_model_info=False):
+        """Write configuration in human-readable format"""
+        file_obj.write("=" * 80 + "\n")
+        file_obj.write("TRAINING CONFIGURATION\n")
+        file_obj.write("=" * 80 + "\n\n")
+        
+        file_obj.write(f"Experiment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        file_obj.write(f"Output Directory: {self.output_dir}\n\n")
+        
+        # Model information
+        file_obj.write("MODEL CONFIGURATION\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Model Name: {self.config['model_name']}\n")
+        file_obj.write(f"Sensor Name: {self.config['sensor_name']}\n")
+        file_obj.write(f"Number of Classes: {self.dataset_config['num_classes']}\n")
+        file_obj.write(f"Ignore Index: {self.config.get('ignore_index', -99)}\n")
+        file_obj.write(f"Class Weights: {self.config.get('class_weights', 'None')}\n")
+        
+        if with_model_info and hasattr(self, 'model'):
+            total_params = sum(p.numel() for p in self.model.parameters())
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            file_obj.write(f"Total Parameters: {total_params:,}\n")
+            file_obj.write(f"Trainable Parameters: {trainable_params:,}\n")
+        
+        file_obj.write("\n")
+        
+        # Training parameters
+        file_obj.write("TRAINING HYPERPARAMETERS\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Epochs: {self.config['epochs']}\n")
+        file_obj.write(f"Batch Size: {self.config['batch_size']}\n")
+        file_obj.write(f"Learning Rate: {self.config['learning_rate']}\n")
+        file_obj.write(f"Weight Decay: {self.config['weight_decay']}\n")
+        file_obj.write(f"Loss Function: {self.config['loss_fn']}\n")
+        file_obj.write(f"Optimizer: {self.config['optimizer']}\n")
+        file_obj.write(f"Scheduler: {self.config['scheduler']}\n")
+        file_obj.write(f"Use AMP: {self.config['use_amp']}\n")
+        file_obj.write(f"Number of Workers: {self.config['num_workers']}\n")
+        file_obj.write(f"Save Every: {self.config['save_every']} epochs\n\n")
+        
+        # Dataset information
+        file_obj.write("DATASET INFORMATION\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Number of Classes: {self.dataset_config['num_classes']}\n")
+        file_obj.write(f"Window Size: {self.dataset_config['window_size']}\n")
+        file_obj.write(f"Background Label: {self.dataset_config['background_label']}\n")
+        file_obj.write(f"Sensor Bands: {self.dataset_config['sensors'][self.config['sensor_name']]['bands']}\n")
+        
+        # List all classes
+        file_obj.write("\nCLASS MAPPING:\n")
+        for i in range(self.dataset_config['num_classes']):
+            original_id = self.dataset_config['class_mapping'].get(str(i), i)
+            class_name = self.dataset_config['class_names'].get(str(i), f"Class_{i}")
+            file_obj.write(f"  Label {i} → Original {original_id} ({class_name})\n")
+        file_obj.write("\n")
+        
+        # Dataset paths
+        file_obj.write("DATASET PATHS\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Data Root: {self.config['data_root']}\n")
+        file_obj.write(f"Dataset Config: {self.config['dataset_config']}\n")
+        file_obj.write(f"Output Directory: {self.config['output_dir']}\n\n")
+        
+        # WandB configuration
+        file_obj.write("WEIGHTS & BIASES CONFIGURATION\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Use WandB: {self.config['use_wandb']}\n")
+        if self.config['use_wandb']:
+            file_obj.write(f"WandB Project: {self.config['wandb_project']}\n")
+            if self.config.get('wandb_entity'):
+                file_obj.write(f"WandB Entity: {self.config['wandb_entity']}\n")
+            if wandb.run:
+                file_obj.write(f"WandB Run URL: {wandb.run.url}\n")
+                file_obj.write(f"WandB Run ID: {wandb.run.id}\n")
+        file_obj.write("\n")
+        
+        # Hardware information
+        file_obj.write("HARDWARE INFORMATION\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"Device: {self.device}\n")
+        file_obj.write(f"CUDA Available: {torch.cuda.is_available()}\n")
+        if torch.cuda.is_available():
+            file_obj.write(f"GPU Name: {torch.cuda.get_device_name(0)}\n")
+            file_obj.write(f"CUDA Version: {torch.version.cuda}\n")
+            file_obj.write(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB\n")
+        file_obj.write(f"PyTorch Version: {torch.__version__}\n")
+        file_obj.write(f"Number of CPU cores: {os.cpu_count()}\n\n")
+        
+        # System information
+        file_obj.write("SYSTEM INFORMATION\n")
+        file_obj.write("-" * 40 + "\n")
+        file_obj.write(f"OS: {platform.system()} {platform.release()}\n")
+        file_obj.write(f"Python Version: {platform.python_version()}\n")
+        file_obj.write(f"Machine: {platform.machine()}\n")
+        file_obj.write(f"Processor: {platform.processor()}\n")
+        
+        file_obj.write("\n" + "=" * 80 + "\n")
+        file_obj.write("END OF CONFIGURATION\n")
+        file_obj.write("=" * 80 + "\n")
     
     def create_dataloaders(self):
         """Create train, val, and test dataloaders"""
         
-        # You'll need to implement proper data augmentation
         from torchvision import transforms
         
-        # Simple transforms for now
+        # Data augmentation for training
         train_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(90),
+            transforms.RandomRotation(degrees=30),
         ])
         
+        # No augmentation for validation/test
         val_transform = None
         
         # Create datasets
@@ -361,7 +588,8 @@ class Trainer:
             batch_size=self.config['batch_size'],
             shuffle=True,
             num_workers=self.config['num_workers'],
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True
         )
         
         val_loader = DataLoader(
@@ -418,18 +646,30 @@ class Trainer:
             # Update progress bar
             total_loss += loss.item()
             pbar.set_postfix({'loss': loss.item()})
+            
+            # Log batch metrics to wandb
+            if self.config['use_wandb'] and batch_idx % 10 == 0:
+                step = epoch * len(train_loader) + batch_idx
+                wandb.log({
+                    'train/batch_loss': loss.item(),
+                    'train/learning_rate': self.optimizer.param_groups[0]['lr'],
+                    'step': step
+                })
         
         # Compute metrics
         metrics = self.metrics.compute()
         metrics['loss'] = total_loss / len(train_loader)
         
-        # Log to wandb
+        # Log epoch metrics to wandb
         if self.config['use_wandb']:
             wandb.log({
-                'train/loss': metrics['loss'],
+                'train/epoch_loss': metrics['loss'],
                 'train/mean_iou': metrics['mean_iou'],
                 'train/mean_f1': metrics['mean_f1'],
                 'train/overall_accuracy': metrics['overall_accuracy'],
+                'train/mean_precision': metrics['mean_precision'],
+                'train/mean_recall': metrics['mean_recall'],
+                'train/kappa': metrics['kappa'],
                 'epoch': epoch
             })
         
@@ -444,11 +684,6 @@ class Trainer:
         
         pbar = tqdm(val_loader, desc=f"{mode.capitalize()} Epoch {epoch}")
         
-        # Store sample predictions for visualization
-        sample_images = []
-        sample_predictions = []
-        sample_labels = []
-        
         for batch_idx, (images, labels) in enumerate(pbar):
             images = images.to(self.device)
             labels = labels.to(self.device)
@@ -461,12 +696,6 @@ class Trainer:
             preds = outputs.argmax(dim=1)
             self.metrics.update(preds, labels)
             
-            # Store samples for visualization (first batch only)
-            if batch_idx == 0 and self.config['use_wandb']:
-                sample_images.append(images[:3].cpu())
-                sample_predictions.append(preds[:3].cpu())
-                sample_labels.append(labels[:3].cpu())
-            
             total_loss += loss.item()
             pbar.set_postfix({'loss': loss.item()})
         
@@ -474,84 +703,21 @@ class Trainer:
         metrics = self.metrics.compute()
         metrics['loss'] = total_loss / len(val_loader)
         
-        # Log to wandb
+        # Log metrics to wandb
         if self.config['use_wandb']:
             wandb.log({
                 f'{mode}/loss': metrics['loss'],
                 f'{mode}/mean_iou': metrics['mean_iou'],
                 f'{mode}/mean_f1': metrics['mean_f1'],
                 f'{mode}/overall_accuracy': metrics['overall_accuracy'],
+                f'{mode}/mean_precision': metrics['mean_precision'],
+                f'{mode}/mean_recall': metrics['mean_recall'],
+                f'{mode}/kappa': metrics['kappa'],
+                f'{mode}/freq_weighted_iou': metrics['freq_weighted_iou'],
                 'epoch': epoch
             })
-            
-            # Log sample predictions
-            if sample_images:
-                self.log_sample_predictions(
-                    sample_images[0], 
-                    sample_predictions[0], 
-                    sample_labels[0],
-                    mode
-                )
         
         return metrics
-    
-    def log_sample_predictions(self, images, predictions, labels, mode):
-        """Log sample predictions to wandb"""
-        
-        # Convert to numpy
-        images_np = images.numpy()
-        preds_np = predictions.numpy()
-        labels_np = labels.numpy()
-        
-        # Create visualization
-        fig, axes = plt.subplots(3, 3, figsize=(15, 10))
-        
-        # Get class colors from dataset config
-        class_colors = self.get_class_colors()
-        
-        for i in range(3):
-            # Show RGB image (assuming first 3 bands)
-            if images_np[i].shape[0] >= 3:
-                rgb_img = np.transpose(images_np[i][:3], (1, 2, 0))
-                rgb_img = (rgb_img - rgb_img.min()) / (rgb_img.max() - rgb_img.min())
-                axes[i, 0].imshow(rgb_img)
-            
-            # Show ground truth
-            gt_img = self.colorize_mask(labels_np[i], class_colors)
-            axes[i, 1].imshow(gt_img)
-            
-            # Show prediction
-            pred_img = self.colorize_mask(preds_np[i], class_colors)
-            axes[i, 2].imshow(pred_img)
-        
-        # Set titles
-        axes[0, 0].set_title('Input (RGB)')
-        axes[0, 1].set_title('Ground Truth')
-        axes[0, 2].set_title('Prediction')
-        
-        plt.tight_layout()
-        
-        # Log to wandb
-        wandb.log({f"{mode}/sample_predictions": wandb.Image(fig)})
-        plt.close(fig)
-    
-    def get_class_colors(self):
-        """Get class colors from dataset config"""
-        # You might want to store colors in your dataset config
-        # For now, use a simple color map
-        import matplotlib.cm as cm
-        colors = cm.tab20(np.linspace(0, 1, self.dataset_config['num_classes']))
-        return colors
-    
-    def colorize_mask(self, mask, colors):
-        """Colorize a mask with class colors"""
-        h, w = mask.shape
-        colored = np.zeros((h, w, 3), dtype=np.uint8)
-        
-        for class_idx in range(self.dataset_config['num_classes']):
-            colored[mask == class_idx] = (colors[class_idx][:3] * 255).astype(np.uint8)
-        
-        return colored
     
     def train(self):
         """Main training loop"""
@@ -563,6 +729,13 @@ class Trainer:
         print(f"Training samples: {len(train_loader.dataset)}")
         print(f"Validation samples: {len(val_loader.dataset)}")
         print(f"Test samples: {len(test_loader.dataset)}")
+        
+        # Training history for saving
+        history = {
+            'train_loss': [], 'train_iou': [], 'train_accuracy': [],
+            'val_loss': [], 'val_iou': [], 'val_accuracy': [],
+            'test_metrics': None
+        }
         
         # Training loop
         for epoch in range(1, self.config['epochs'] + 1):
@@ -589,6 +762,14 @@ class Trainer:
                 else:
                     self.scheduler.step()
             
+            # Update history
+            history['train_loss'].append(train_metrics['loss'])
+            history['train_iou'].append(train_metrics['mean_iou'])
+            history['train_accuracy'].append(train_metrics['overall_accuracy'])
+            history['val_loss'].append(val_metrics['loss'])
+            history['val_iou'].append(val_metrics['mean_iou'])
+            history['val_accuracy'].append(val_metrics['overall_accuracy'])
+            
             # Save best model
             if val_metrics['mean_iou'] > self.best_val_iou:
                 self.best_val_iou = val_metrics['mean_iou']
@@ -602,9 +783,18 @@ class Trainer:
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
                     'best_val_iou': self.best_val_iou,
+                    'val_metrics': val_metrics,
                     'config': self.config
                 }, checkpoint_path)
-                print(f"Saved best model to {checkpoint_path}")
+                print(f"✓ Saved best model (mIoU: {self.best_val_iou:.4f}) to {checkpoint_path}")
+                
+                # Log best metrics to wandb
+                if self.config['use_wandb']:
+                    wandb.log({
+                        'best/epoch': epoch,
+                        'best/val_iou': self.best_val_iou,
+                        'best/val_accuracy': val_metrics['overall_accuracy']
+                    })
             
             # Save regular checkpoint
             if epoch % self.config['save_every'] == 0:
@@ -624,81 +814,274 @@ class Trainer:
         
         # Test on test set
         print(f"\n{'='*60}")
-        print("Testing on test set")
+        print("Testing on test set with best model")
         print(f"{'='*60}")
         test_metrics = self.validate(test_loader, epoch, mode='test')
+        history['test_metrics'] = test_metrics
         
-        print(f"\nTest Results:")
-        print(f"  mIoU: {test_metrics['mean_iou']:.4f}")
-        print(f"  Mean F1: {test_metrics['mean_f1']:.4f}")
+        print(f"\n📊 FINAL TEST RESULTS:")
+        print(f"  Mean IoU:        {test_metrics['mean_iou']:.4f}")
+        print(f"  Mean F1 Score:   {test_metrics['mean_f1']:.4f}")
         print(f"  Overall Accuracy: {test_metrics['overall_accuracy']:.4f}")
-        print(f"  Frequency Weighted IoU: {test_metrics['freq_weighted_iou']:.4f}")
+        print(f"  Kappa:           {test_metrics['kappa']:.4f}")
+        print(f"  Mean Precision:  {test_metrics['mean_precision']:.4f}")
+        print(f"  Mean Recall:     {test_metrics['mean_recall']:.4f}")
+        print(f"  Freq Weighted IoU: {test_metrics['freq_weighted_iou']:.4f}")
         
         # Save final model
         final_model_path = self.output_dir / "final_model.pth"
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'config': self.config,
-            'test_metrics': test_metrics
+            'test_metrics': test_metrics,
+            'history': history
         }, final_model_path)
         
-        # Save test metrics
+        # Save test metrics and history
         metrics_path = self.output_dir / "test_metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(test_metrics, f, indent=2)
         
-        # Log test metrics to wandb
+        history_path = self.output_dir / "training_history.json"
+        with open(history_path, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        # Save final configuration with results
+        final_config_path = self.output_dir / "final_config.txt"
+        with open(final_config_path, 'w') as f:
+            self._write_config_txt(f, with_model_info=True)
+            f.write("\n" + "="*80 + "\n")
+            f.write("FINAL RESULTS\n")
+            f.write("="*80 + "\n\n")
+            f.write(f"Best Validation IoU: {self.best_val_iou:.4f}\n")
+            f.write(f"Test Mean IoU: {test_metrics['mean_iou']:.4f}\n")
+            f.write(f"Test Overall Accuracy: {test_metrics['overall_accuracy']:.4f}\n")
+            f.write(f"Test Kappa: {test_metrics['kappa']:.4f}\n")
+            f.write(f"Training Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        # Log final test metrics to wandb
         if self.config['use_wandb']:
-            wandb.log({'test/best_iou': test_metrics['mean_iou']})
+            wandb.log({
+                'test/final_iou': test_metrics['mean_iou'],
+                'test/final_f1': test_metrics['mean_f1'],
+                'test/final_accuracy': test_metrics['overall_accuracy'],
+                'test/final_kappa': test_metrics['kappa'],
+                'test/final_precision': test_metrics['mean_precision'],
+                'test/final_recall': test_metrics['mean_recall']
+            })
+            
+            # Save model artifact to wandb
+            artifact = wandb.Artifact(
+                name=f"{self.config['model_name']}_{self.config['sensor_name']}",
+                type="model",
+                description=f"Best model trained on {self.config['sensor_name']} data",
+                metadata={
+                    'test_iou': test_metrics['mean_iou'],
+                    'test_accuracy': test_metrics['overall_accuracy'],
+                    'best_val_iou': self.best_val_iou,
+                    'epochs': self.config['epochs']
+                }
+            )
+            artifact.add_file(str(final_model_path))
+            wandb.log_artifact(artifact)
+            
             wandb.finish()
         
+        print(f"\n✅ Training completed!")
+        print(f"   Model saved to: {final_model_path}")
+        print(f"   Metrics saved to: {metrics_path}")
+        print(f"   Config saved to: {final_config_path}")
+        print(f"   Best validation IoU: {self.best_val_iou:.4f}")
+        
         return test_metrics
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Train multi-sensor segmentation model')
+    
+    # Model and dataset
+    parser.add_argument('--model_name', type=str, default='BasicUNet',
+                       choices=['BasicUNet', 'MIMUNet', 'FocalUNet', 'SepViTUNet', 
+                                'SwinUNet', 'CATUNet', 'TwinsUNet', 'HRNet'],
+                       help='Model architecture to use')
+    parser.add_argument('--sensor_name', type=str, default='landsat8',
+                       choices=['landsat8', 'sentinel2', 'alphaearth'],
+                       help='Sensor to train on')
+    
+    # Paths
+    parser.add_argument('--data_root', type=str, 
+                       default=r'D:\Hackathon15_AlphaEarth\train_val_test_patches\patches',
+                       help='Root directory of dataset patches')
+    parser.add_argument('--dataset_config', type=str,
+                       default=r'D:\Hackathon15_AlphaEarth\train_val_test_patches\multisensor_dataset_config.json',
+                       help='Path to dataset configuration JSON')
+    parser.add_argument('--output_dir', type=str, default='./experiments',
+                       help='Output directory for experiments')
+    
+    # Training hyperparameters
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
+    
+    # Loss and optimizer
+    parser.add_argument('--loss_fn', type=str, default='cross_entropy',
+                       choices=['cross_entropy', 'focal'], help='Loss function')
+    parser.add_argument('--optimizer', type=str, default='adamw',
+                       choices=['adam', 'adamw', 'sgd'], help='Optimizer')
+    parser.add_argument('--scheduler', type=str, default='reduce_on_plateau',
+                       choices=['cosine', 'reduce_on_plateau', 'step', 'none'], help='Learning rate scheduler')
+    
+    # Model settings
+    parser.add_argument('--ignore_index', type=int, default=-99,
+                       help='Index to ignore in loss calculation')
+    parser.add_argument('--class_weights', type=str, default=None,
+                       help='Path to JSON file with class weights or comma-separated list')
+    
+    # Training settings
+    parser.add_argument('--use_amp', action='store_true', default=True,
+                       help='Use automatic mixed precision training')
+    parser.add_argument('--no_amp', action='store_false', dest='use_amp',
+                       help='Disable automatic mixed precision training')
+    parser.add_argument('--num_workers', type=int, default=4,
+                       help='Number of data loader workers')
+    parser.add_argument('--save_every', type=int, default=10,
+                       help='Save checkpoint every N epochs')
+    
+    # Weights & Biases
+    parser.add_argument('--use_wandb', action='store_true', default=True,
+                       help='Use Weights & Biases for logging')
+    parser.add_argument('--no_wandb', action='store_false', dest='use_wandb',
+                       help='Disable Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default='multisensor-segmentation',
+                       help='WandB project name')
+    parser.add_argument('--wandb_entity', type=str, default='saeid_taleghani',
+                       help='WandB entity/username')
+    
+    # Config file
+    parser.add_argument('--config', type=str, default=None,
+                       help='Path to YAML config file (overrides command line args)')
+    
+    # Seed
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
+    
+    return parser.parse_args()
+
+def load_config_from_yaml(config_path):
+    """Load configuration from YAML file"""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+def parse_class_weights(class_weights_str):
+    """Parse class weights from string"""
+    if class_weights_str is None or class_weights_str == "null":
+        return None
+    
+    if os.path.exists(class_weights_str):
+        # Load from JSON file
+        with open(class_weights_str, 'r') as f:
+            weights = json.load(f)
+        # Convert to tensor if it's a list
+        if isinstance(weights, list):
+            return torch.tensor(weights, dtype=torch.float32)
+        return weights
+    else:
+        # Check if it's a JSON string
+        if class_weights_str.startswith('[') and class_weights_str.endswith(']'):
+            try:
+                weights = json.loads(class_weights_str)
+                return torch.tensor(weights, dtype=torch.float32)
+            except:
+                pass
+        
+        # Parse comma-separated list
+        try:
+            weights = [float(w) for w in class_weights_str.split(',')]
+            return torch.tensor(weights, dtype=torch.float32)
+        except:
+            print(f"Warning: Could not parse class weights: {class_weights_str}")
+            return None
 
 def main():
     """Main function to run training"""
     
-    # Configuration
-    config = {
-        # Model and dataset
-        'model_name': 'BasicUNet',  # Choose from: MIMUNet, FocalUNet, etc.
-        'sensor_name': 'landsat8',  # 'landsat8', 'sentinel2', 'alphaearth'
-        
-        # Paths
-        'data_root': r'D:\Hackathon15_AlphaEarth\train_val_test_patches\patches',
-        'dataset_config': r'D:\Hackathon15_AlphaEarth\train_val_test_patches\multisensor_dataset_config.json',
-        'output_dir': './experiments',
-        
-        # Training hyperparameters
-        'epochs': 100,
-        'batch_size': 16,
-        'learning_rate': 1e-4,
-        'weight_decay': 1e-5,
-        
-        # Loss and optimizer
-        'loss_fn': 'cross_entropy',  # 'cross_entropy' or 'focal'
-        'optimizer': 'adamw',  # 'adam', 'adamw', 'sgd'
-        'scheduler': 'reduce_on_plateau',  # 'cosine', 'reduce_on_plateau', 'step', None
-        
-        # Model settings
-        'ignore_index': -99,
-        'class_weights': None,  # Optional: list of class weights
-        
-        # Training settings
-        'use_amp': True,  # Mixed precision training
-        'num_workers': 4,
-        'save_every': 10,
-        
-        # Weights & Biases
-        'use_wandb': True,
-        'wandb_project': 'multisensor-segmentation',
-    }
+    args = parse_args()
     
+    # Set seed
+    set_seed(args.seed)
+    
+    # Load config from YAML if provided
+    if args.config:
+        config = load_config_from_yaml(args.config)
+        print(f"Loaded configuration from: {args.config}")
+    else:
+        # Parse class weights
+        class_weights = parse_class_weights(args.class_weights)
+        
+        # Create config from command line arguments
+        config = {
+            # Model and dataset
+            'model_name': args.model_name,
+            'sensor_name': args.sensor_name,
+            
+            # Paths
+            'data_root': args.data_root,
+            'dataset_config': args.dataset_config,
+            'output_dir': args.output_dir,
+            
+            # Training hyperparameters
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'learning_rate': args.learning_rate,
+            'weight_decay': args.weight_decay,
+            
+            # Loss and optimizer
+            'loss_fn': args.loss_fn,
+            'optimizer': args.optimizer,
+            'scheduler': args.scheduler if args.scheduler != 'none' else None,
+            
+            # Model settings
+            'ignore_index': args.ignore_index,
+            'class_weights': class_weights,
+            
+            # Training settings
+            'use_amp': args.use_amp,
+            'num_workers': args.num_workers,
+            'save_every': args.save_every,
+            
+            # Weights & Biases
+            'use_wandb': args.use_wandb,
+            'wandb_project': args.wandb_project,
+            'wandb_entity': args.wandb_entity,
+            
+            # Seed
+            'seed': args.seed,
+        }
+    
+     # Setup WandB login if enabled
+    if config['use_wandb']:
+        print("\n" + "="*60)
+        print("Setting up Weights & Biases")
+        print("="*60)
+        
+        # Call your existing setup function
+        setup_wandb_api_key()
+        
+        # Verify we have an API key
+        if 'WANDB_API_KEY' not in os.environ:
+            print("⚠ No WandB API key found. Disabling WandB.")
+            config['use_wandb'] = False
+        else:
+            print("✓ WandB API key loaded successfully")
+        print("="*60 + "\n")
+        
     # Create trainer and train
     trainer = Trainer(config)
     test_metrics = trainer.train()
     
-    print(f"\nTraining completed!")
-    print(f"Test mIoU: {test_metrics['mean_iou']:.4f}")
+    return test_metrics
 
 if __name__ == '__main__':
     main()

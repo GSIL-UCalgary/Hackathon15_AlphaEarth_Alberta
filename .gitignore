@@ -5,4 +5,5 @@ train_val_test_patches/abundance_maps/
 train_val_test_patches/patches/
 train_val_test_patches/LC_filtered.tif
 train_val_test_patches/LC_remapped.tif
+wandb_api_key.txt
 
