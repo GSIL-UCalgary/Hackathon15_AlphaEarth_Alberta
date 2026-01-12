@@ -87,6 +87,9 @@ python preprocessing/extract_patches_alldatasets.py
 ---
 
 ### 3. Dataset Structure
+
+After preprocessing, you'll get:
+
 ```
 train_val_test_patches/
 ├── LC_remapped.tif
