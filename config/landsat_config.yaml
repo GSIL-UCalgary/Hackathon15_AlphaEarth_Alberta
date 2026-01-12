@@ -1,10 +1,11 @@
 # Multi-sensor Semantic Segmentation Configuration
 # landsat8_config.yaml
-# How to run:  python train.py --config ./config/landsat_config.yaml
+# How to run:  python train.py --model_name BasicUNet --sensor_name landsat8 --label_type filtered
 
 # Model and dataset
 model_name: "BasicUNet"
 sensor_name: "landsat8"
+label_type: "filtered"  # or "unfiltered"
 
 # Paths - Use absolute paths or set them relative to project root
 data_root: "./train_val_test_patches/patches"

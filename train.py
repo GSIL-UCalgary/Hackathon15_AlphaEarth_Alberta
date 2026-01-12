@@ -115,12 +115,13 @@ setup_wandb_api_key()
 class MultisensorDataset(Dataset):
     """Dataset for multi-sensor semantic segmentation"""
     
-    def __init__(self, root_dir, sensor_name, split='train', transform=None):
+    def __init__(self, root_dir, sensor_name, split='train', label_type='filtered', transform=None):
         """
         Args:
             root_dir: Root directory with patches
             sensor_name: Name of sensor ('landsat8', 'sentinel2', 'alphaearth')
             split: 'train', 'val', or 'test'
+            label_type: 'filtered' or 'unfiltered'
             transform: Optional transforms
         """
         self.root_dir = Path(root_dir)
@@ -130,7 +131,7 @@ class MultisensorDataset(Dataset):
         
         # Paths
         self.img_dir = self.root_dir / split / sensor_name / 'img'
-        self.label_dir = self.root_dir / split / 'labels' / 'filtered'
+        self.label_dir = self.root_dir / split / 'labels' / label_type
         
         # Get all patch files
         self.img_files = sorted(list(self.img_dir.glob('*.tif')))
@@ -295,6 +296,10 @@ class Trainer:
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
+
+        # Get label type (default to 'filtered' if not specified)
+        label_type = config.get('label_type', 'filtered')
+
         
         # Create output directory with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -309,9 +314,9 @@ class Trainer:
             wandb.init(
                 project=config['wandb_project'],
                 entity=config.get('wandb_entity', None),
-                name=f"{config['model_name']}_{config['sensor_name']}_{timestamp}",
+                name=f"{config['model_name']}_{config['sensor_name']}_{label_type}_{timestamp}",
                 config=config,
-                tags=[config['model_name'], config['sensor_name'], "segmentation"],
+                tags=[config['model_name'], config['sensor_name'], "segmentation", label_type],
                 dir=str(self.output_dir)  # Save wandb logs to experiment directory
             )
             print(f"WandB Run: {wandb.run.url}")
@@ -459,6 +464,7 @@ class Trainer:
         file_obj.write("-" * 40 + "\n")
         file_obj.write(f"Model Name: {self.config['model_name']}\n")
         file_obj.write(f"Sensor Name: {self.config['sensor_name']}\n")
+        file_obj.write(f"Label Type: {self.config.get('label_type', 'filtered')}\n") 
         file_obj.write(f"Number of Classes: {self.dataset_config['num_classes']}\n")
         file_obj.write(f"Ignore Index: {self.config.get('ignore_index', -99)}\n")
         file_obj.write(f"Class Weights: {self.config.get('class_weights', 'None')}\n")
@@ -559,27 +565,33 @@ class Trainer:
         
         # No augmentation for validation/test
         val_transform = None
-        
+
+        # Get label type from config
+        label_type = self.config.get('label_type', 'filtered')
+
         # Create datasets
         train_dataset = MultisensorDataset(
-            root_dir=self.config['data_root'],
-            sensor_name=self.config['sensor_name'],
-            split='train',
-            transform=train_transform
+        root_dir=self.config['data_root'],
+        sensor_name=self.config['sensor_name'],
+        split='train',
+        label_type=label_type,
+        transform=train_transform
         )
         
         val_dataset = MultisensorDataset(
-            root_dir=self.config['data_root'],
-            sensor_name=self.config['sensor_name'],
-            split='val',
-            transform=val_transform
+        root_dir=self.config['data_root'],
+        sensor_name=self.config['sensor_name'],
+        split='val',
+        label_type=label_type,
+        transform=val_transform
         )
-        
+    
         test_dataset = MultisensorDataset(
-            root_dir=self.config['data_root'],
-            sensor_name=self.config['sensor_name'],
-            split='test',
-            transform=val_transform
+        root_dir=self.config['data_root'],
+        sensor_name=self.config['sensor_name'],
+        split='test',
+        label_type=label_type,
+        transform=val_transform
         )
         
         # Create dataloaders
@@ -904,10 +916,14 @@ def parse_args():
                        choices=['BasicUNet', 'MIMUNet', 'FocalUNet', 'SepViTUNet', 
                                 'SwinUNet', 'CATUNet', 'TwinsUNet', 'HRNet'],
                        help='Model architecture to use')
+    # Sensor type
     parser.add_argument('--sensor_name', type=str, default='landsat8',
                        choices=['landsat8', 'sentinel2', 'alphaearth'],
                        help='Sensor to train on')
-    
+    # Label type (filtered vs unfiltered)
+    parser.add_argument('--label_type', type=str, default='filtered',
+                       choices=['filtered', 'unfiltered'],
+                       help='Type of labels to use: filtered or unfiltered')
     # Paths
     parser.add_argument('--data_root', type=str, 
                        default=r'D:\Hackathon15_AlphaEarth\train_val_test_patches\patches',
@@ -1025,7 +1041,7 @@ def main():
             # Model and dataset
             'model_name': args.model_name,
             'sensor_name': args.sensor_name,
-            
+            'label_type': args.label_type, 
             # Paths
             'data_root': args.data_root,
             'dataset_config': args.dataset_config,
@@ -1076,7 +1092,7 @@ def main():
         else:
             print("✓ WandB API key loaded successfully")
         print("="*60 + "\n")
-        
+
     # Create trainer and train
     trainer = Trainer(config)
     test_metrics = trainer.train()
