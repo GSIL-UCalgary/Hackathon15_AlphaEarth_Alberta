@@ -111,9 +111,12 @@ def patch_generator(scene_array, patch_size, overlap=0):
                 :
             ]
             yield r, c, patch
+
+
 def save_classification_results_with_gdal(classified_scene, transform, output_dir, scene_name, timestamp, save_probabilities=False):
     """
     Save classification results using GDAL with exact EPSG:3979 CRS.
+    Clips to Alberta boundary using gdal.Warp.
     
     Args:
         classified_scene: 2D numpy array of class labels (0-12 after prediction)
@@ -151,7 +154,6 @@ def save_classification_results_with_gdal(classified_scene, transform, output_di
     }
     
     # Alberta classes (13 classes) and their mapping to Canada-wide IDs
-    # Based on your training data and the PDF
     ALBERTA_TO_CANADA_MAPPING = {
         0: 1,   # Temperate needleleaf forest -> Temperate or sub-polar needleleaf forest
         1: 2,   # Sub-polar taiga forest -> Sub-polar taiga needleleaf forest
@@ -168,20 +170,15 @@ def save_classification_results_with_gdal(classified_scene, transform, output_di
         12: 19  # Snow/ice -> Snow and ice
     }
     
-    # Note: The following Canada classes are NOT present in Alberta according to the PDF:
-    # - Class 11: Sub-polar or polar shrubland-lichen-moss
-    # - Class 13: Sub-polar or polar barren-lichen-moss
-    # These are excluded from Canada's national dataset for Alberta
-    
     # Create a list of ALL Canada classes that should appear in Alberta
     ALBERTA_CANADA_CLASSES = sorted(ALBERTA_TO_CANADA_MAPPING.values())
     
     # Remap the classified scene from Alberta classes (0-12) to Canada-wide classes
     print("Remapping Alberta classes (0-12) to Canada Land Cover classes...")
-    remapped_scene = np.zeros_like(classified_scene, dtype=np.uint8)
+    remapped_scene = np.zeros_like(classified_scene, dtype=np.int16)  # Use int16 to support -99
     
-    # First, set all pixels to 0 (background/unclassified)
-    remapped_scene.fill(0)
+    # First, set all pixels to -99 (outside boundary)
+    remapped_scene.fill(-99)
     
     # Then map each Alberta class to its Canada-wide equivalent
     for alberta_class, canada_class in ALBERTA_TO_CANADA_MAPPING.items():
@@ -191,21 +188,27 @@ def save_classification_results_with_gdal(classified_scene, transform, output_di
             canada_name = CANADA_CLASS_DEFINITIONS[canada_class]['name']
             print(f"  Mapped Alberta class {alberta_class} -> Canada class {canada_class} ({canada_name})")
     
-    # Count occurrences of each class
-    unique_classes = np.unique(remapped_scene)
-    print(f"\nFound {len(unique_classes)-1} Canada land cover classes in Alberta scene:")
-    for class_id in sorted(unique_classes):
-        if class_id == 0:
-            continue  # Skip background class
-        count = np.sum(remapped_scene == class_id)
-        name = CANADA_CLASS_DEFINITIONS.get(class_id, {}).get('name', 'Unknown')
-        print(f"  Class {class_id}: {name} ({count:,} pixels)")
+    # ==================== SAVE TEMPORARY UNCLIPPED FILE ====================
+    print("\nCreating temporary unclipped raster...")
     
-    # Count background pixels
-    background_count = np.sum(remapped_scene == 0)
-    print(f"  Background/unclassified: {background_count:,} pixels")
+    # Create temporary directory
+    temp_dir = output_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
     
-    # EXACT WKT string for EPSG:3979
+    temp_file = temp_dir / f"temp_unclipped_{timestamp}.tif"
+    
+    driver = gdal.GetDriverByName('GTiff')
+    
+    # Save unclipped raster with int16 to support -99
+    ds_temp = driver.Create(str(temp_file), W, H, 1, gdal.GDT_Int16, 
+                   options=['COMPRESS=LZW', 'PREDICTOR=2', 'TILED=YES',
+                            'BLOCKXSIZE=256', 'BLOCKYSIZE=256'])
+    
+    # Set geotransform and projection
+    ds_temp.SetGeoTransform((transform.c, transform.a, transform.b, 
+                            transform.f, transform.d, transform.e))
+    
+    # Set CRS
     EPSG_3979_WKT = '''PROJCRS["NAD83(CSRS) / Canada Atlas Lambert",
     BASEGEOGCRS["NAD83(CSRS)",
         DATUM["NAD83 Canadian Spatial Reference System",
@@ -248,127 +251,255 @@ def save_classification_results_with_gdal(classified_scene, transform, output_di
         BBOX[38.21,-141.01,86.46,-40.73]],
     ID["EPSG",3979]]'''
     
-    # 1. Save the label map (single band) - This is what QGIS will show with class names
-    label_path = output_dir / f"{scene_name}_labels_{timestamp}.tif"
-    
-    driver = gdal.GetDriverByName('GTiff')
-    
-    # For single-band label map: Use PHOTOMETRIC=PALETTE for color table
-    ds = driver.Create(str(label_path), W, H, 1, gdal.GDT_Byte, 
-                   options=['COMPRESS=LZW', 'PREDICTOR=1', 'TILED=YES',
-                            'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
-                            'PHOTOMETRIC=PALETTE'])
-    
-    ds.SetGeoTransform((transform.c, transform.a, transform.b, 
-                        transform.f, transform.d, transform.e))
-    
     srs = osr.SpatialReference()
     srs.ImportFromWkt(EPSG_3979_WKT)
-    ds.SetProjection(srs.ExportToWkt())
+    ds_temp.SetProjection(srs.ExportToWkt())
     
-    band = ds.GetRasterBand(1)
-    band.WriteArray(remapped_scene)  # Use remapped scene instead of original
-    band.SetNoDataValue(0)  # Set 0 as nodata (background/unclassified)
-    band.SetDescription("2020 Canada Land Cover Classification")
+    band_temp = ds_temp.GetRasterBand(1)
+    band_temp.WriteArray(remapped_scene)
+    band_temp.SetNoDataValue(-99)  # Set -99 as NoData for outside boundary
+    band_temp.FlushCache()
+    ds_temp = None  # Close file
     
-    # Create and set colormap for Canada classes present in Alberta
+    print(f"  Temporary file saved: {temp_file}")
+    
+    # ==================== CLIP WITH ALBERTA BOUNDARY ====================
+    print("\nClipping with Alberta boundary using gdal.Warp...")
+    
+    alberta_shapefile = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Alberta_EPSG_3979.gpkg"
+    
+    # Output file path for clipped raster
+    label_path = output_dir / f"{scene_name}_labels_{timestamp}_CLIPPED.tif"
+    
+    if not Path(alberta_shapefile).exists():
+        print(f"  ERROR: Alberta shapefile not found at: {alberta_shapefile}")
+        print(f"  Skipping clipping...")
+        # Just rename temp file to output
+        temp_file.rename(label_path)
+        is_clipped = False
+    else:
+        print(f"  Using Alberta boundary: {alberta_shapefile}")
+        
+        try:
+            # Define Warp options for clipping - use -99 as NoData
+            warp_options = gdal.WarpOptions(
+                format="GTiff",
+                cutlineDSName=alberta_shapefile,
+                cropToCutline=True,
+                dstNodata=-99,  # Set -99 as NoData for outside boundary
+                resampleAlg='near',
+                creationOptions=[
+                    "COMPRESS=LZW",
+                    "PREDICTOR=2",
+                    "TILED=YES",
+                    "BLOCKXSIZE=256",
+                    "BLOCKYSIZE=256",
+                    "BIGTIFF=YES"
+                ],
+                # Preserve original resolution
+                xRes=transform.a,
+                yRes=transform.e,
+                targetAlignedPixels=False
+            )
+            
+            # Perform the clipping
+            print("  Running gdal.Warp to clip raster...")
+            ds_clipped = gdal.Warp(str(label_path), str(temp_file), options=warp_options)
+            
+            if ds_clipped is None:
+                raise Exception("gdal.Warp returned None")
+            
+            # Get clipped raster info
+            width = ds_clipped.RasterXSize
+            height = ds_clipped.RasterYSize
+            gt = ds_clipped.GetGeoTransform()
+            band = ds_clipped.GetRasterBand(1)
+            no_data = band.GetNoDataValue()
+            
+            # Read the clipped data
+            clipped_data = band.ReadAsArray()
+            
+            ds_clipped = None  # Close file
+            
+            print(f"  ✓ Successfully clipped raster")
+            print(f"    Output size: {width} x {height} pixels")
+            print(f"    Resolution: {abs(gt[1]):.1f}m x {abs(gt[5]):.1f}m")
+            print(f"    NoData value: {no_data}")
+            
+            # Count statistics after clipping
+            unique_classes = np.unique(clipped_data)
+            
+            total_pixels = width * height
+            nodata_pixels = np.sum(clipped_data == -99)
+            classified_pixels = total_pixels - nodata_pixels
+            
+            print(f"\n  Statistics after clipping:")
+            print(f"    Total pixels: {total_pixels:,}")
+            print(f"    NoData (outside Alberta): {nodata_pixels:,} ({nodata_pixels/total_pixels*100:.1f}%)")
+            print(f"    Classified (inside Alberta): {classified_pixels:,} ({classified_pixels/total_pixels*100:.1f}%)")
+            
+            for class_id in sorted(unique_classes):
+                if class_id == -99:
+                    continue
+                count = np.sum(clipped_data == class_id)
+                if count > 0:
+                    name = CANADA_CLASS_DEFINITIONS.get(class_id, {}).get('name', f'Unknown class {class_id}')
+                    print(f"    Class {class_id}: {name} - {count:,} pixels ({count/total_pixels*100:.1f}%)")
+            
+            is_clipped = True
+            
+            # Clean up temporary file
+            if temp_file.exists():
+                temp_file.unlink()
+                print(f"  Cleaned up temporary file")
+            
+        except Exception as e:
+            print(f"  ERROR during clipping: {str(e)}")
+            print(f"  Using unclipped file instead")
+            # Use unclipped file as final
+            temp_file.rename(label_path)
+            is_clipped = False
+    
+    # Clean up temp directory
+    if temp_dir.exists() and not any(temp_dir.iterdir()):
+        temp_dir.rmdir()
+    
+    # ==================== ADD COLOR TABLE AND METADATA ====================
+    print(f"\nAdding color table and metadata...")
+    
+    # Re-open the file to add color table
+    ds_final = gdal.Open(str(label_path), gdal.GA_Update)
+    
+    if ds_final is None:
+        print(f"  ERROR: Could not open final file")
+        return None, None
+    
+    # Change data type to Byte for color table (QGIS works better with Byte)
+    print("  Converting to Byte data type for color table...")
+    
+    # Create a new Byte version
+    label_path_byte = output_dir / f"{scene_name}_labels_{timestamp}_CLIPPED_BYTE.tif"
+    
+    translate_options = gdal.TranslateOptions(
+        outputType=gdal.GDT_Byte,
+        noData=255,  # Use 255 for -99 in Byte version
+        creationOptions=[
+            "COMPRESS=LZW",
+            "PREDICTOR=1",
+            "TILED=YES",
+            "BLOCKXSIZE=256",
+            "BLOCKYSIZE=256",
+            "PHOTOMETRIC=PALETTE"
+        ]
+    )
+    
+    ds_byte = gdal.Translate(str(label_path_byte), ds_final, options=translate_options)
+    ds_final = None  # Close original
+    
+    # Now open the Byte version
+    ds_byte = gdal.Open(str(label_path_byte), gdal.GA_Update)
+    band = ds_byte.GetRasterBand(1)
+    
+    # Create and set colormap
     colors = gdal.ColorTable()
     
-    # First, set class 0 (background/unclassified) to transparent black
-    colors.SetColorEntry(0, (0, 0, 0, 0))  # Transparent black for background
+    # Class 255: No Data / Outside Alberta (black)
+    colors.SetColorEntry(255, (0, 0, 0, 255))
     
-    # Set colors for all Canada classes that appear in Alberta
-    for class_id in ALBERTA_CANADA_CLASSES:
-        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
-        colors.SetColorEntry(class_id, (r, g, b, 255))
-    
-    # Note: We don't set colors for classes 11 and 13 since they don't appear in Alberta
-    # according to the PDF
+    # Set colors for all Canada classes (1-19)
+    # We need to remap values: -99 -> 255, 1-19 stay the same
+    for class_id in range(1, 20):
+        if class_id in CANADA_CLASS_DEFINITIONS:
+            r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+            colors.SetColorEntry(class_id, (r, g, b, 255))
+        else:
+            # For undefined classes, use gray
+            colors.SetColorEntry(class_id, (128, 128, 128, 255))
     
     band.SetRasterColorTable(colors)
     band.SetRasterColorInterpretation(gdal.GCI_PaletteIndex)
     
-    # Create category names for QGIS - only for classes present in Alberta
+    # Set category names - ONLY class names, no extra info
     category_names = []
     
-    # Add transparent entry for class 0 (background)
-    category_names.append("0:0:0:0:0:No Data")  # Transparent black
+    # Class 255: No Data / Outside Alberta
+    category_names.append("255:0:0:0:255:Outside Alberta")
     
-    # Add entries for all Canada classes that appear in Alberta
-    for class_id in ALBERTA_CANADA_CLASSES:
-        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
-        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
-        # Format: value:red:green:blue:opacity:name
-        category_names.append(f"{class_id}:{r}:{g}:{b}:255:{name}")
+    # Add entries for all Canada classes (1-19)
+    for class_id in range(1, 20):
+        if class_id in CANADA_CLASS_DEFINITIONS:
+            r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+            name = CANADA_CLASS_DEFINITIONS[class_id]['name']
+            # Format: value:red:green:blue:opacity:name (name only, no extra text)
+            category_names.append(f"{class_id}:{r}:{g}:{b}:255:{name}")
+        else:
+            # Skip undefined classes
+            pass
     
-    # Set the categories on the band
     band.SetRasterCategoryNames(category_names)
     
-    # Also set as metadata
-    band.SetMetadata({
-        'CLASS_0_NAME': 'No Data',
-        'CLASS_0_COLOR': '0,0,0',
-        'CLASS_0_OPACITY': '0'
-    })
-    
-    for class_id in ALBERTA_CANADA_CLASSES:
-        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
-        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
-        band.SetMetadata({
-            f'CLASS_{class_id}_NAME': name,
-            f'CLASS_{class_id}_COLOR': f'{r},{g},{b}'
-        })
-    
     # Set dataset metadata
-    ds.SetMetadataItem('TIFFTAG_SOFTWARE', 'AlphaEarth Classification')
-    ds.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover Classification - Alberta')
-    ds.SetMetadataItem('TIFFTAG_DATETIME', datetime.now().strftime('%Y:%m:%d %H:%M:%S'))
+    ds_byte.SetMetadataItem('TIFFTAG_SOFTWARE', 'AlphaEarth Classification')
+    ds_byte.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover Classification - Alberta')
+    ds_byte.SetMetadataItem('TIFFTAG_DATETIME', datetime.now().strftime('%Y:%m:%d %H:%M:%S'))
     
-    # Set additional metadata
-    ds.SetMetadata({
-        'CLASS_COUNT': str(len(ALBERTA_CANADA_CLASSES)),
-        'CLASS_DEFINITION': '2020 Canada Land Cover',
-        'SOURCE': 'AlphaEarth Alberta Classification',
-        'DATA_SOURCE': 'Landsat 8, Sentinel-2, AlphaEarth',
-        'PROCESSING_DATE': datetime.now().strftime('%Y-%m-%d'),
-        'CLASS_MAPPING': 'Alberta 13-class -> Canada Land Cover classes',
-        'NOTE': 'Classes 11 and 13 are excluded as per Canada national dataset for Alberta'
-    }, '')
+    # Build overviews
+    ds_byte.BuildOverviews("NEAREST", [2, 4, 8, 16])
+    ds_byte = None  # Close file
     
-    ds.BuildOverviews("NEAREST", [2, 4, 8, 16])
-    ds = None  # Close dataset
+    # Replace the original with Byte version
+    if label_path.exists():
+        label_path.unlink()
+    label_path_byte.rename(label_path)
     
-    print(f"✓ Label map saved: {label_path}")
-    print(f"  Canada Land Cover classes with official names and colors")
-    print(f"  Background (class 0) is transparent")
-    print(f"  No 'Undefined' classes - only official Canada classes")
+    print(f"✓ Final label map saved: {label_path}")
+    print(f"  Added color table with class names only")
+    print(f"  Outside Alberta: -99 -> 255 (black)")
+    print(f"  {'CLIPPED to Alberta boundary' if is_clipped else 'UNCLIPPED (boundary file not found)'}")
     
-    # 2. Create and save RGB visualization (for visual inspection)
+    # ==================== CREATE RGB VISUALIZATION ====================
+    print(f"\nCreating RGB visualization...")
+    
     rgb_path = output_dir / f"{scene_name}_rgb_{timestamp}.tif"
     
-    rgb_array = np.zeros((H, W, 3), dtype=np.uint8)
-    for class_id in ALBERTA_CANADA_CLASSES:
-        mask = remapped_scene == class_id
-        if mask.any():
-            rgb_array[mask] = CANADA_CLASS_DEFINITIONS[class_id]['color']
+    # Open the label file to read data for RGB
+    ds_label = gdal.Open(str(label_path))
+    rgb_data = ds_label.GetRasterBand(1).ReadAsArray()
+    H_rgb, W_rgb = rgb_data.shape
     
-    # Background pixels (class 0) remain black
+    rgb_array = np.zeros((H_rgb, W_rgb, 3), dtype=np.uint8)
     
-    # For RGB file: USE PHOTOMETRIC=RGB
-    ds = driver.Create(str(rgb_path), W, H, 3, gdal.GDT_Byte,
+    # Set colors for Canada classes (1-19)
+    for class_id in range(1, 20):
+        if class_id in CANADA_CLASS_DEFINITIONS:
+            mask = rgb_data == class_id
+            if mask.any():
+                rgb_array[mask] = CANADA_CLASS_DEFINITIONS[class_id]['color']
+    
+    # Outside Alberta (255): black
+    outside_mask = rgb_data == 255
+    if outside_mask.any():
+        rgb_array[outside_mask] = (0, 0, 0)
+    
+    ds_label = None
+    
+    # Save RGB file
+    ds_rgb = driver.Create(str(rgb_path), W_rgb, H_rgb, 3, gdal.GDT_Byte,
                        options=['COMPRESS=LZW', 'PREDICTOR=2', 'TILED=YES', 
                                 'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
                                 'PHOTOMETRIC=RGB'])
     
-    ds.SetGeoTransform((transform.c, transform.a, transform.b,
-                        transform.f, transform.d, transform.e))
+    # Get geotransform from label file
+    ds_label = gdal.Open(str(label_path))
+    gt = ds_label.GetGeoTransform()
+    proj = ds_label.GetProjection()
+    ds_label = None
     
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(EPSG_3979_WKT)
-    ds.SetProjection(srs.ExportToWkt())
+    ds_rgb.SetGeoTransform(gt)
+    ds_rgb.SetProjection(proj)
     
     for i in range(3):
-        band = ds.GetRasterBand(i + 1)
+        band = ds_rgb.GetRasterBand(i + 1)
         band.WriteArray(rgb_array[:, :, i])
         if i == 0:
             band.SetDescription("Red")
@@ -380,59 +511,23 @@ def save_classification_results_with_gdal(classified_scene, transform, output_di
             band.SetDescription("Blue")
             band.SetColorInterpretation(gdal.GCI_BlueBand)
     
-    ds.SetMetadataItem('TIFFTAG_SOFTWARE', 'Classification')
-    ds.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover - RGB Visualization')
+    ds_rgb.SetMetadataItem('TIFFTAG_SOFTWARE', 'Classification')
+    ds_rgb.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover - RGB Visualization')
     
-    ds.BuildOverviews("AVERAGE", [2, 4, 8, 16])
-    ds = None
+    ds_rgb.BuildOverviews("AVERAGE", [2, 4, 8, 16])
+    ds_rgb = None
     
     print(f"✓ RGB visualization saved: {rgb_path}")
-    print(f"  This is a true RGB image for visual inspection")
     
-    # 3. Create a metadata text file
-    metadata_path = output_dir / f"{scene_name}_metadata_{timestamp}.txt"
-    with open(metadata_path, 'w') as f:
-        f.write("2020 Canada Land Cover Classification - Alberta\n")
-        f.write("=" * 60 + "\n\n")
-        
-        f.write("Classification Details:\n")
-        f.write(f"  Scene: {scene_name}\n")
-        f.write(f"  Processing Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"  Output Files:\n")
-        f.write(f"    - Label Map: {label_path.name}\n")
-        f.write(f"    - RGB Visualization: {rgb_path.name}\n\n")
-        
-        f.write("Canada Land Cover Classes in Alberta:\n")
-        f.write("-" * 40 + "\n")
-        for class_id in ALBERTA_CANADA_CLASSES:
-            name = CANADA_CLASS_DEFINITIONS[class_id]['name']
-            r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
-            count = np.sum(remapped_scene == class_id)
-            f.write(f"  Class {class_id:2d}: {name}\n")
-            f.write(f"       RGB: {r:3d}, {g:3d}, {b:3d}\n")
-            f.write(f"       Pixels: {count:,}\n\n")
-        
-        f.write("Note:\n")
-        f.write("  - Class 0: No Data (transparent background)\n")
-        f.write("  - Classes 11 and 13 are excluded from Canada's national dataset for Alberta\n")
-        f.write("  - Based on 2020 Canada Land Cover classification scheme\n")
+    # ==================== CREATE QGIS STYLE FILE ====================
+    print(f"\nCreating QGIS style file...")
     
-    print(f"✓ Metadata file saved: {metadata_path}")
-    
-    # 4. Create a QGIS style file (.qml) for better visualization
     qml_path = label_path.with_suffix('.qml')
-    create_qgis_style_file(qml_path, CANADA_CLASS_DEFINITIONS, ALBERTA_CANADA_CLASSES)
-    
-    return label_path, rgb_path
-
-
-def create_qgis_style_file(qml_path, class_definitions, alberta_classes):
-    """Create a QGIS style file (.qml) for the classified raster"""
     
     qml_content = '''<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.28.0-Firenze" styleCategories="Symbology">
   <pipe>
-    <rasterrenderer opacity="1" alphaBand="-1" classificationMax="19" classificationMin="0" type="paletted" band="1">
+    <rasterrenderer opacity="1" alphaBand="-1" classificationMax="19" classificationMin="1" type="paletted" band="1">
       <rasterTransparency/>
       <minMaxOrigin>
         <limits>None</limits>
@@ -445,13 +540,13 @@ def create_qgis_style_file(qml_path, class_definitions, alberta_classes):
       <colorPalette>
 '''
     
-    # Add transparent entry for class 0
-    qml_content += '        <paletteEntry value="0" color="#000000" label="No Data" alpha="0"/>\n'
+    # Class 255: Outside Alberta (black)
+    qml_content += '        <paletteEntry value="255" color="#000000" label="Outside Alberta" alpha="255"/>\n'
     
     # Add palette entries for Alberta Canada classes
-    for class_id in alberta_classes:
-        color = class_definitions[class_id]['color']
-        name = class_definitions[class_id]['name']
+    for class_id in ALBERTA_CANADA_CLASSES:
+        color = CANADA_CLASS_DEFINITIONS[class_id]['color']
+        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
         r, g, b = color
         qml_content += f'        <paletteEntry value="{class_id}" color="#{r:02x}{g:02x}{b:02x}" label="{name}" alpha="255"/>\n'
     
@@ -468,8 +563,9 @@ def create_qgis_style_file(qml_path, class_definitions, alberta_classes):
         f.write(qml_content)
     
     print(f"✓ QGIS style file created: {qml_path}")
-    print(f"  When you open the TIFF in QGIS, it will automatically load this style file")
-    return qml_path
+    print(f"  Legend will show only class names")
+    
+    return label_path, rgb_path
 
 def classify_full_scene(
     scene_path,
@@ -571,8 +667,9 @@ def classify_full_scene(
     print(f"Transposed shape: {scene_array.shape}")
     
     # 2. Initialize output arrays
+    num_classes = model_config['num_classes']  # <-- Define num_classes here, outside the if block
+    
     if save_probabilities:
-        num_classes = model_config['num_classes']
         classified_scene = np.zeros((H, W, num_classes), dtype=np.float32)
     else:
         classified_scene = np.zeros((H, W), dtype=np.uint8)
