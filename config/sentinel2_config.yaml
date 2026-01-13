@@ -1,6 +1,5 @@
 # Multi-sensor Semantic Segmentation Configuration
-# sentinel2_config.yaml
-# python train.py --config config/sentinel2_config.yaml
+# python train.py --sensor_name sentinel2
 # Model and dataset
 model_name: "BasicUNet"
 sensor_name: "sentinel2" # landsat8 OR alphaearth
