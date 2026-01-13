@@ -111,17 +111,377 @@ def patch_generator(scene_array, patch_size, overlap=0):
                 :
             ]
             yield r, c, patch
+def save_classification_results_with_gdal(classified_scene, transform, output_dir, scene_name, timestamp, save_probabilities=False):
+    """
+    Save classification results using GDAL with exact EPSG:3979 CRS.
+    
+    Args:
+        classified_scene: 2D numpy array of class labels (0-12 after prediction)
+        transform: Geotransform from original scene
+        output_dir: Directory to save outputs
+        scene_name: Name of the scene
+        timestamp: Timestamp string
+        save_probabilities: If True, save probabilities instead of labels
+    
+    Returns:
+        label_path, rgb_path: Paths to saved label map and RGB visualization
+    """
+    from osgeo import gdal, osr
+    import numpy as np
+    
+    H, W = classified_scene.shape
+    
+    # CANADA LAND COVER CLASS DEFINITIONS from the PDF (Official Canada classes)
+    CANADA_CLASS_DEFINITIONS = {
+        1: {'name': 'Temperate or sub-polar needleleaf forest', 'color': (0, 61, 0)},
+        2: {'name': 'Sub-polar taiga needleleaf forest', 'color': (148, 156, 112)},
+        5: {'name': 'Temperate or sub-polar broadleaf deciduous forest', 'color': (20, 140, 61)},
+        6: {'name': 'Mixed forest', 'color': (91, 117, 43)},
+        8: {'name': 'Temperate or sub-polar Shrubland', 'color': (179, 138, 51)},
+        10: {'name': 'Temperate or sub-polar grassland', 'color': (225, 207, 138)},
+        11: {'name': 'Sub-polar or polar shrubland-lichen-moss', 'color': (156, 117, 84)},
+        12: {'name': 'Sub-polar or polar grassland-lichen-moss', 'color': (186, 212, 143)},
+        13: {'name': 'Sub-polar or polar barren-lichen-moss', 'color': (64, 138, 112)},
+        14: {'name': 'Wetland', 'color': (107, 163, 138)},
+        15: {'name': 'Cropland', 'color': (230, 174, 102)},
+        16: {'name': 'Barren land', 'color': (168, 171, 174)},
+        17: {'name': 'Urban and built-up', 'color': (220, 33, 38)},
+        18: {'name': 'Water', 'color': (76, 112, 163)},
+        19: {'name': 'Snow and ice', 'color': (255, 250, 255)}
+    }
+    
+    # Alberta classes (13 classes) and their mapping to Canada-wide IDs
+    # Based on your training data and the PDF
+    ALBERTA_TO_CANADA_MAPPING = {
+        0: 1,   # Temperate needleleaf forest -> Temperate or sub-polar needleleaf forest
+        1: 2,   # Sub-polar taiga forest -> Sub-polar taiga needleleaf forest
+        2: 5,   # Temperate broadleaf forest -> Temperate or sub-polar broadleaf deciduous forest
+        3: 6,   # Mixed forest -> Mixed forest
+        4: 8,   # Temperate shrubland -> Temperate or sub-polar Shrubland
+        5: 10,  # Temperate grassland -> Temperate or sub-polar grassland
+        6: 12,  # Polar grassland-lichen -> Sub-polar or polar grassland-lichen-moss
+        7: 14,  # Wetland -> Wetland
+        8: 15,  # Cropland -> Cropland
+        9: 16,  # Barren lands -> Barren land
+        10: 17, # Urban -> Urban and built-up
+        11: 18, # Water -> Water
+        12: 19  # Snow/ice -> Snow and ice
+    }
+    
+    # Note: The following Canada classes are NOT present in Alberta according to the PDF:
+    # - Class 11: Sub-polar or polar shrubland-lichen-moss
+    # - Class 13: Sub-polar or polar barren-lichen-moss
+    # These are excluded from Canada's national dataset for Alberta
+    
+    # Create a list of ALL Canada classes that should appear in Alberta
+    ALBERTA_CANADA_CLASSES = sorted(ALBERTA_TO_CANADA_MAPPING.values())
+    
+    # Remap the classified scene from Alberta classes (0-12) to Canada-wide classes
+    print("Remapping Alberta classes (0-12) to Canada Land Cover classes...")
+    remapped_scene = np.zeros_like(classified_scene, dtype=np.uint8)
+    
+    # First, set all pixels to 0 (background/unclassified)
+    remapped_scene.fill(0)
+    
+    # Then map each Alberta class to its Canada-wide equivalent
+    for alberta_class, canada_class in ALBERTA_TO_CANADA_MAPPING.items():
+        mask = classified_scene == alberta_class
+        if mask.any():
+            remapped_scene[mask] = canada_class
+            canada_name = CANADA_CLASS_DEFINITIONS[canada_class]['name']
+            print(f"  Mapped Alberta class {alberta_class} -> Canada class {canada_class} ({canada_name})")
+    
+    # Count occurrences of each class
+    unique_classes = np.unique(remapped_scene)
+    print(f"\nFound {len(unique_classes)-1} Canada land cover classes in Alberta scene:")
+    for class_id in sorted(unique_classes):
+        if class_id == 0:
+            continue  # Skip background class
+        count = np.sum(remapped_scene == class_id)
+        name = CANADA_CLASS_DEFINITIONS.get(class_id, {}).get('name', 'Unknown')
+        print(f"  Class {class_id}: {name} ({count:,} pixels)")
+    
+    # Count background pixels
+    background_count = np.sum(remapped_scene == 0)
+    print(f"  Background/unclassified: {background_count:,} pixels")
+    
+    # EXACT WKT string for EPSG:3979
+    EPSG_3979_WKT = '''PROJCRS["NAD83(CSRS) / Canada Atlas Lambert",
+    BASEGEOGCRS["NAD83(CSRS)",
+        DATUM["NAD83 Canadian Spatial Reference System",
+            ELLIPSOID["GRS 1980",6378137,298.257222101,
+                LENGTHUNIT["metre",1]]],
+        PRIMEM["Greenwich",0,
+            ANGLEUNIT["degree",0.0174532925199433]],
+        ID["EPSG",4617]],
+    CONVERSION["Canada Atlas Lambert",
+        METHOD["Lambert Conic Conformal (2SP)",
+            ID["EPSG",9802]],
+        PARAMETER["Latitude of false origin",49,
+            ANGLEUNIT["degree",0.0174532925199433],
+            ID["EPSG",8821]],
+        PARAMETER["Longitude of false origin",-95,
+            ANGLEUNIT["degree",0.0174532925199433],
+            ID["EPSG",8822]],
+        PARAMETER["Latitude of 1st standard parallel",49,
+            ANGLEUNIT["degree",0.0174532925199433],
+            ID["EPSG",8823]],
+        PARAMETER["Latitude of 2nd standard parallel",77,
+            ANGLEUNIT["degree",0.0174532925199433],
+            ID["EPSG",8824]],
+        PARAMETER["Easting at false origin",0,
+            LENGTHUNIT["metre",1],
+            ID["EPSG",8826]],
+        PARAMETER["Northing at false origin",0,
+            LENGTHUNIT["metre",1],
+            ID["EPSG",8827]]],
+    CS[Cartesian,2],
+        AXIS["(E)",east,
+            ORDER[1],
+            LENGTHUNIT["metre",1]],
+        AXIS["(N)",north,
+            ORDER[2],
+            LENGTHUNIT["metre",1]],
+    USAGE[
+        SCOPE["Transformation of coordinates at 5m level of accuracy."],
+        AREA["Canada - onshore and offshore - Alberta; British Columbia; Manitoba; New Brunswick; Newfoundland and Labrador; Northwest Territories; Nova Scotia; Nunavut; Ontario; Prince Edward Island; Quebec; Saskatchewan; Yukon."],
+        BBOX[38.21,-141.01,86.46,-40.73]],
+    ID["EPSG",3979]]'''
+    
+    # 1. Save the label map (single band) - This is what QGIS will show with class names
+    label_path = output_dir / f"{scene_name}_labels_{timestamp}.tif"
+    
+    driver = gdal.GetDriverByName('GTiff')
+    
+    # For single-band label map: Use PHOTOMETRIC=PALETTE for color table
+    ds = driver.Create(str(label_path), W, H, 1, gdal.GDT_Byte, 
+                   options=['COMPRESS=LZW', 'PREDICTOR=1', 'TILED=YES',
+                            'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
+                            'PHOTOMETRIC=PALETTE'])
+    
+    ds.SetGeoTransform((transform.c, transform.a, transform.b, 
+                        transform.f, transform.d, transform.e))
+    
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(EPSG_3979_WKT)
+    ds.SetProjection(srs.ExportToWkt())
+    
+    band = ds.GetRasterBand(1)
+    band.WriteArray(remapped_scene)  # Use remapped scene instead of original
+    band.SetNoDataValue(0)  # Set 0 as nodata (background/unclassified)
+    band.SetDescription("2020 Canada Land Cover Classification")
+    
+    # Create and set colormap for Canada classes present in Alberta
+    colors = gdal.ColorTable()
+    
+    # First, set class 0 (background/unclassified) to transparent black
+    colors.SetColorEntry(0, (0, 0, 0, 0))  # Transparent black for background
+    
+    # Set colors for all Canada classes that appear in Alberta
+    for class_id in ALBERTA_CANADA_CLASSES:
+        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+        colors.SetColorEntry(class_id, (r, g, b, 255))
+    
+    # Note: We don't set colors for classes 11 and 13 since they don't appear in Alberta
+    # according to the PDF
+    
+    band.SetRasterColorTable(colors)
+    band.SetRasterColorInterpretation(gdal.GCI_PaletteIndex)
+    
+    # Create category names for QGIS - only for classes present in Alberta
+    category_names = []
+    
+    # Add transparent entry for class 0 (background)
+    category_names.append("0:0:0:0:0:No Data")  # Transparent black
+    
+    # Add entries for all Canada classes that appear in Alberta
+    for class_id in ALBERTA_CANADA_CLASSES:
+        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
+        # Format: value:red:green:blue:opacity:name
+        category_names.append(f"{class_id}:{r}:{g}:{b}:255:{name}")
+    
+    # Set the categories on the band
+    band.SetRasterCategoryNames(category_names)
+    
+    # Also set as metadata
+    band.SetMetadata({
+        'CLASS_0_NAME': 'No Data',
+        'CLASS_0_COLOR': '0,0,0',
+        'CLASS_0_OPACITY': '0'
+    })
+    
+    for class_id in ALBERTA_CANADA_CLASSES:
+        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
+        r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+        band.SetMetadata({
+            f'CLASS_{class_id}_NAME': name,
+            f'CLASS_{class_id}_COLOR': f'{r},{g},{b}'
+        })
+    
+    # Set dataset metadata
+    ds.SetMetadataItem('TIFFTAG_SOFTWARE', 'AlphaEarth Classification')
+    ds.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover Classification - Alberta')
+    ds.SetMetadataItem('TIFFTAG_DATETIME', datetime.now().strftime('%Y:%m:%d %H:%M:%S'))
+    
+    # Set additional metadata
+    ds.SetMetadata({
+        'CLASS_COUNT': str(len(ALBERTA_CANADA_CLASSES)),
+        'CLASS_DEFINITION': '2020 Canada Land Cover',
+        'SOURCE': 'AlphaEarth Alberta Classification',
+        'DATA_SOURCE': 'Landsat 8, Sentinel-2, AlphaEarth',
+        'PROCESSING_DATE': datetime.now().strftime('%Y-%m-%d'),
+        'CLASS_MAPPING': 'Alberta 13-class -> Canada Land Cover classes',
+        'NOTE': 'Classes 11 and 13 are excluded as per Canada national dataset for Alberta'
+    }, '')
+    
+    ds.BuildOverviews("NEAREST", [2, 4, 8, 16])
+    ds = None  # Close dataset
+    
+    print(f"✓ Label map saved: {label_path}")
+    print(f"  Canada Land Cover classes with official names and colors")
+    print(f"  Background (class 0) is transparent")
+    print(f"  No 'Undefined' classes - only official Canada classes")
+    
+    # 2. Create and save RGB visualization (for visual inspection)
+    rgb_path = output_dir / f"{scene_name}_rgb_{timestamp}.tif"
+    
+    rgb_array = np.zeros((H, W, 3), dtype=np.uint8)
+    for class_id in ALBERTA_CANADA_CLASSES:
+        mask = remapped_scene == class_id
+        if mask.any():
+            rgb_array[mask] = CANADA_CLASS_DEFINITIONS[class_id]['color']
+    
+    # Background pixels (class 0) remain black
+    
+    # For RGB file: USE PHOTOMETRIC=RGB
+    ds = driver.Create(str(rgb_path), W, H, 3, gdal.GDT_Byte,
+                       options=['COMPRESS=LZW', 'PREDICTOR=2', 'TILED=YES', 
+                                'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
+                                'PHOTOMETRIC=RGB'])
+    
+    ds.SetGeoTransform((transform.c, transform.a, transform.b,
+                        transform.f, transform.d, transform.e))
+    
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(EPSG_3979_WKT)
+    ds.SetProjection(srs.ExportToWkt())
+    
+    for i in range(3):
+        band = ds.GetRasterBand(i + 1)
+        band.WriteArray(rgb_array[:, :, i])
+        if i == 0:
+            band.SetDescription("Red")
+            band.SetColorInterpretation(gdal.GCI_RedBand)
+        elif i == 1:
+            band.SetDescription("Green")
+            band.SetColorInterpretation(gdal.GCI_GreenBand)
+        elif i == 2:
+            band.SetDescription("Blue")
+            band.SetColorInterpretation(gdal.GCI_BlueBand)
+    
+    ds.SetMetadataItem('TIFFTAG_SOFTWARE', 'Classification')
+    ds.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover - RGB Visualization')
+    
+    ds.BuildOverviews("AVERAGE", [2, 4, 8, 16])
+    ds = None
+    
+    print(f"✓ RGB visualization saved: {rgb_path}")
+    print(f"  This is a true RGB image for visual inspection")
+    
+    # 3. Create a metadata text file
+    metadata_path = output_dir / f"{scene_name}_metadata_{timestamp}.txt"
+    with open(metadata_path, 'w') as f:
+        f.write("2020 Canada Land Cover Classification - Alberta\n")
+        f.write("=" * 60 + "\n\n")
+        
+        f.write("Classification Details:\n")
+        f.write(f"  Scene: {scene_name}\n")
+        f.write(f"  Processing Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"  Output Files:\n")
+        f.write(f"    - Label Map: {label_path.name}\n")
+        f.write(f"    - RGB Visualization: {rgb_path.name}\n\n")
+        
+        f.write("Canada Land Cover Classes in Alberta:\n")
+        f.write("-" * 40 + "\n")
+        for class_id in ALBERTA_CANADA_CLASSES:
+            name = CANADA_CLASS_DEFINITIONS[class_id]['name']
+            r, g, b = CANADA_CLASS_DEFINITIONS[class_id]['color']
+            count = np.sum(remapped_scene == class_id)
+            f.write(f"  Class {class_id:2d}: {name}\n")
+            f.write(f"       RGB: {r:3d}, {g:3d}, {b:3d}\n")
+            f.write(f"       Pixels: {count:,}\n\n")
+        
+        f.write("Note:\n")
+        f.write("  - Class 0: No Data (transparent background)\n")
+        f.write("  - Classes 11 and 13 are excluded from Canada's national dataset for Alberta\n")
+        f.write("  - Based on 2020 Canada Land Cover classification scheme\n")
+    
+    print(f"✓ Metadata file saved: {metadata_path}")
+    
+    # 4. Create a QGIS style file (.qml) for better visualization
+    qml_path = label_path.with_suffix('.qml')
+    create_qgis_style_file(qml_path, CANADA_CLASS_DEFINITIONS, ALBERTA_CANADA_CLASSES)
+    
+    return label_path, rgb_path
+
+
+def create_qgis_style_file(qml_path, class_definitions, alberta_classes):
+    """Create a QGIS style file (.qml) for the classified raster"""
+    
+    qml_content = '''<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.28.0-Firenze" styleCategories="Symbology">
+  <pipe>
+    <rasterrenderer opacity="1" alphaBand="-1" classificationMax="19" classificationMin="0" type="paletted" band="1">
+      <rasterTransparency/>
+      <minMaxOrigin>
+        <limits>None</limits>
+        <extent>WholeRaster</extent>
+        <statAccuracy>Estimated</statAccuracy>
+        <cumulativeCutLower>0.02</cumulativeCutLower>
+        <cumulativeCutUpper>0.98</cumulativeCutUpper>
+        <stdDevFactor>2</stdDevFactor>
+      </minMaxOrigin>
+      <colorPalette>
+'''
+    
+    # Add transparent entry for class 0
+    qml_content += '        <paletteEntry value="0" color="#000000" label="No Data" alpha="0"/>\n'
+    
+    # Add palette entries for Alberta Canada classes
+    for class_id in alberta_classes:
+        color = class_definitions[class_id]['color']
+        name = class_definitions[class_id]['name']
+        r, g, b = color
+        qml_content += f'        <paletteEntry value="{class_id}" color="#{r:02x}{g:02x}{b:02x}" label="{name}" alpha="255"/>\n'
+    
+    qml_content += '''      </colorPalette>
+    </rasterrenderer>
+    <brightnesscontrast brightness="0" contrast="0" gamma="1"/>
+    <huesaturation colorizeGreen="128" colorizeOn="0" colorizeRed="255" colorizeBlue="128" grayscaleMode="0" saturation="0" colorizeStrength="100"/>
+    <rasterresampler maxOversampling="2"/>
+  </pipe>
+  <blendMode>0</blendMode>
+</qgis>'''
+    
+    with open(qml_path, 'w') as f:
+        f.write(qml_content)
+    
+    print(f"✓ QGIS style file created: {qml_path}")
+    print(f"  When you open the TIFF in QGIS, it will automatically load this style file")
+    return qml_path
+
 def classify_full_scene(
     scene_path,
     model,
     model_config,
     experiment_dir,
     patch_size=224,
-    batch_size=16,
+    batch_size=8,
     device=None,
     overlap=0,
-    save_probabilities=True,
-    target_crs='EPSG:3979'  # NEW: Specify target CRS
+    save_probabilities=False,
+    target_crs='EPSG:3979'
 ):
     """
     Classify a full scene and save in the experiment directory.
@@ -157,13 +517,6 @@ def classify_full_scene(
     scene_name = Path(scene_path).stem
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    if save_probabilities:
-        output_filename = f"{scene_name}_probabilities_{timestamp}.tif"
-    else:
-        output_filename = f"{scene_name}_classified_{timestamp}.tif"
-    
-    output_path = output_dir / output_filename
-    
     # 1. Load scene with geospatial metadata
     with rasterio.open(scene_path) as src:
         # Read all bands
@@ -179,40 +532,40 @@ def classify_full_scene(
         print(f"Target CRS: {target_crs}")
         print(f"Transform: {transform}")
         
-        # IMPROVED CRS CHECKING
-    if crs is not None:
-        crs_str = str(crs).upper()
-        
-        # Check if it's actually EPSG:3979 by looking for keywords
-        is_epsg_3979 = False
-        
-        # Check for EPSG:3979 code
-        if 'EPSG:3979' in crs_str:
-            is_epsg_3979 = True
-        
-        # Check for NAD83(CSRS) / Canada Atlas Lambert (the actual name)
-        elif ('NAD83' in crs_str and 'CSRS' in crs_str and 
-              'CANADA ATLAS LAMBERT' in crs_str):
-            is_epsg_3979 = True
-            print(f"✓ CRS is NAD83(CSRS) / Canada Atlas Lambert (EPSG:3979)")
-        
-        # Check for just the local name
-        elif 'NAD83(CSRS) / CANADA ATLAS LAMBERT' in crs_str:
-            is_epsg_3979 = True
-            print(f"✓ CRS is NAD83(CSRS) / Canada Atlas Lambert (EPSG:3979)")
-        
-        if not is_epsg_3979:
-            print(f"⚠️  WARNING: Input CRS may not be EPSG:3979")
-            print(f"   CRS: {crs}")
-            print(f"   Expected: {target_crs}")
+        # CRS CHECKING
+        if crs is not None:
+            crs_str = str(crs).upper()
+            
+            # Check if it's actually EPSG:3979 by looking for keywords
+            is_epsg_3979 = False
+            
+            # Check for EPSG:3979 code
+            if 'EPSG:3979' in crs_str:
+                is_epsg_3979 = True
+            
+            # Check for NAD83(CSRS) / Canada Atlas Lambert (the actual name)
+            elif ('NAD83' in crs_str and 'CSRS' in crs_str and 
+                  'CANADA ATLAS LAMBERT' in crs_str):
+                is_epsg_3979 = True
+                print(f"✓ CRS is NAD83(CSRS) / Canada Atlas Lambert (EPSG:3979)")
+            
+            # Check for just the local name
+            elif 'NAD83(CSRS) / CANADA ATLAS LAMBERT' in crs_str:
+                is_epsg_3979 = True
+                print(f"✓ CRS is NAD83(CSRS) / Canada Atlas Lambert (EPSG:3979)")
+            
+            if not is_epsg_3979:
+                print(f"⚠️  WARNING: Input CRS may not be EPSG:3979")
+                print(f"   CRS: {crs}")
+                print(f"   Expected: {target_crs}")
+            else:
+                print(f"✅ Input CRS matches EPSG:3979")
         else:
-            print(f"✅ Input CRS matches EPSG:3979")
-    else:
-        print("⚠️  WARNING: Input scene has no CRS information!")
-        print(f"   Assuming it's in {target_crs}")
-        
-        # Transpose to (H, W, C) for easier patch extraction
-        scene_array = scene_array.transpose(1, 2, 0)  # (H, W, C)
+            print("⚠️  WARNING: Input scene has no CRS information!")
+            print(f"   Assuming it's in {target_crs}")
+    
+    # Transpose to (H, W, C) for easier patch extraction
+    scene_array = scene_array.transpose(1, 2, 0)  # (H, W, C)
     
     H, W, C = scene_array.shape
     print(f"Transposed shape: {scene_array.shape}")
@@ -241,7 +594,7 @@ def classify_full_scene(
     print(f"  Batch size: {batch_size}")
     print(f"  Save probabilities: {save_probabilities}")
     print(f"  Target CRS: {target_crs}")
-    print(f"  Output path: {output_path}")
+    print(f"  Output directory: {output_dir}")
     
     # 5. Process patches
     patches = []
@@ -323,25 +676,15 @@ def classify_full_scene(
         
         pbar.update(len(patches))
     
-    # 7. Save classified scene with geospatial information
-    print(f"\nSaving classified scene to: {output_path}")
-    
-    # Update profile for output - FORCE target CRS
-    output_profile = profile.copy()
-    
-    # Set the CRS to target CRS
-    try:
-        from rasterio.crs import CRS
-        target_crs_obj = CRS.from_string(target_crs)
-        output_profile['crs'] = target_crs_obj
-        print(f"Setting output CRS to: {target_crs}")
-    except Exception as e:
-        print(f"Warning: Could not parse target CRS {target_crs}: {e}")
-        print(f"Using input CRS: {crs}")
-        output_profile['crs'] = crs
+    # 7. Save classification results using GDAL with exact EPSG:3979 CRS
+    print(f"\nSaving classification results...")
     
     if save_probabilities:
-        # For probability maps: save as Float32 with multiple bands
+        # For probabilities, use rasterio (not implemented with GDAL in this version)
+        output_filename = f"{scene_name}_probabilities_{timestamp}.tif"
+        output_path = output_dir / output_filename
+        
+        output_profile = profile.copy()
         output_profile.update(
             dtype=rasterio.float32,
             count=num_classes,
@@ -350,33 +693,28 @@ def classify_full_scene(
         )
         
         # Transpose back to (C, H, W) for writing
-        classified_scene = classified_scene.transpose(2, 0, 1)  # (num_classes, H, W)
+        classified_scene = classified_scene.transpose(2, 0, 1)
         
         with rasterio.open(output_path, 'w', **output_profile) as dst:
             dst.write(classified_scene)
-            # Write band descriptions
             for i in range(num_classes):
                 dst.set_band_description(i+1, f"Class_{i}_probability")
-                
+        
+        print(f"✓ Probability map saved: {output_path}")
+        rgb_path = None
     else:
-        # For label maps: save as UInt8
-        output_profile.update(
-            dtype=rasterio.uint8,
-            count=1,
-            compress='LZW',
-            nodata=255  # Use 255 for no data
+        # For labels, use GDAL to save both label map and RGB visualization
+        label_path, rgb_path = save_classification_results_with_gdal(
+            classified_scene=classified_scene,
+            transform=transform,
+            output_dir=output_dir,
+            scene_name=scene_name,
+            timestamp=timestamp,
+            save_probabilities=save_probabilities
         )
         
-        with rasterio.open(output_path, 'w', **output_profile) as dst:
-            dst.write(classified_scene, 1)
-            # Add colormap for visualization
-            try:
-                from rasterio.colormap import ColorMap
-                # Create a simple colormap (adjust based on your classes)
-                cmap = {i: (i*10, i*20, i*30) for i in range(num_classes)}
-                dst.write_colormap(1, cmap)
-            except:
-                pass
+        # Use label path as the main output path
+        output_path = label_path
     
     print("✓ Classification complete!")
     
@@ -395,7 +733,7 @@ def classify_full_scene(
         'num_classes': num_classes,
         'input_crs': str(crs) if crs else None,
         'target_crs': target_crs,
-        'output_crs': str(output_profile['crs']) if 'crs' in output_profile else None,
+        'output_crs': 'EPSG:3979 - NAD83(CSRS) / Canada Atlas Lambert',
         'transform': [transform.a, transform.b, transform.c, 
                      transform.d, transform.e, transform.f],
         'dimensions': {'height': H, 'width': W, 'channels': C},
@@ -403,38 +741,36 @@ def classify_full_scene(
         'processing_time_seconds': pbar.format_dict['elapsed']
     }
     
+    if not save_probabilities and rgb_path:
+        metadata['rgb_visualization'] = str(rgb_path)
+    
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
     print(f"✓ Metadata saved to: {metadata_path}")
     
-    # 9. Verify the saved file has correct CRS
-    print(f"\nVerifying saved file CRS...")
-    try:
-        with rasterio.open(output_path) as dst:
-            saved_crs = dst.crs
-            saved_transform = dst.transform
-            saved_shape = dst.shape
-            saved_count = dst.count
-            
-        print(f"✓ Saved file verification:")
-        print(f"  CRS: {saved_crs}")
-        print(f"  Shape: {saved_shape}")
-        print(f"  Bands: {saved_count}")
-        print(f"  Transform: {saved_transform}")
+    # 9. Create symbolic links for easy access
+    if not save_probabilities:
+        scene_stem = Path(scene_path).stem
         
-        # Check if CRS matches target
-        if saved_crs:
-            saved_crs_str = str(saved_crs).upper()
-            if target_crs.upper() in saved_crs_str:
-                print(f"✅ CRS correctly set to {target_crs}")
-            else:
-                print(f"⚠️  WARNING: Saved CRS ({saved_crs}) doesn't match target ({target_crs})")
-        else:
-            print("⚠️  WARNING: Saved file has no CRS information!")
-            
-    except Exception as e:
-        print(f"⚠️  Could not verify saved file: {e}")
+        # Link for label map
+        link_path = experiment_dir / f"classified_{scene_stem}.tif"
+        if not link_path.exists():
+            try:
+                os.symlink(output_path.relative_to(experiment_dir), link_path)
+                print(f"✓ Label map symbolic link: {link_path}")
+            except:
+                pass
+        
+        # Link for RGB visualization
+        if rgb_path:
+            rgb_link_path = experiment_dir / f"classified_{scene_stem}_rgb.tif"
+            if not rgb_link_path.exists():
+                try:
+                    os.symlink(rgb_path.relative_to(experiment_dir), rgb_link_path)
+                    print(f"✓ RGB symbolic link: {rgb_link_path}")
+                except:
+                    pass
     
     return output_path
 
@@ -539,9 +875,9 @@ def main():
                        help='Patch size for classification (must match training)')
     parser.add_argument('--overlap', type=int, default=0,
                        help='Overlap between patches (default: 0)')
-    parser.add_argument('--batch_size', type=int, default=16,
+    parser.add_argument('--batch_size', type=int, default=8,
                        help='Batch size for inference')
-    parser.add_argument('--save_probabilities', action='store_true', default = True,
+    parser.add_argument('--save_probabilities', action='store_true', default=False,
                        help='Save class probabilities instead of labels')
     parser.add_argument('--device', type=str, default=None,
                        help='Device: "cuda", "cpu", or auto-detect')
@@ -634,21 +970,11 @@ def main():
                 device=device,
                 overlap=args.overlap,
                 save_probabilities=args.save_probabilities,
-                target_crs='EPSG:3979'  # ADD THIS LINE
+                target_crs='EPSG:3979'
             )
             
             print(f"\n✅ Scene classification completed for {experiment_dir.name}!")
-            print(f"   Output saved to: {output_path}")
-            
-            # Also create a symbolic link for easy access
-            scene_stem = Path(scene_path).stem
-            link_path = experiment_dir / f"classified_{scene_stem}.tif"
-            if not link_path.exists():
-                try:
-                    os.symlink(output_path.relative_to(experiment_dir), link_path)
-                    print(f"   Symbolic link created: {link_path}")
-                except:
-                    pass
+            print(f"   Label map saved to: {output_path}")
             
         except Exception as e:
             print(f"ERROR processing {experiment_dir.name}: {str(e)}")
