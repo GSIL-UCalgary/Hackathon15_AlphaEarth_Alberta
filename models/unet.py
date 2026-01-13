@@ -7,27 +7,27 @@ class SimpleUNet(nn.Module):
         super().__init__()
         self.config = config
         
-        in_channels = config['model']['in_channels']
-        num_classes = config['model']['num_classes']
-        stem_dim = config['model']['stem_dim']
+        in_channels = config['in_channels']
+        num_classes = config['num_classes']
+        stem_dim = config['stem_dim']
         
         # Stem (same as your MIMUNet)
         stem_layers = [
             nn.Conv2d(in_channels, stem_dim, 
-                     kernel_size=config['model']['stem_kernel'],
-                     padding=config['model']['stem_padding']),
+                     kernel_size=config['stem_kernel'],
+                     padding=config['stem_padding']),
             nn.BatchNorm2d(stem_dim),
             nn.ReLU(inplace=True),
         ]
         
-        if config['model'].get('stem_downsampling', False):
+        if config.get('stem_downsampling', False):
             stem_layers.append(nn.AvgPool2d(kernel_size=2, stride=2))
             
         self.stem = nn.Sequential(*stem_layers)
         
         # Encoder (Contracting Path) - using dims from config
-        dims = config['model']['dims']  # [32, 64, 128, 256]
-        depths = config['model']['depths']  # [1, 1, 2, 1]
+        dims = config['dims']  # [32, 64, 128, 256]
+        depths = config['depths']  # [1, 1, 2, 1]
         
         # Encoder blocks
         self.encoder_blocks = nn.ModuleList()
@@ -113,9 +113,9 @@ class BasicUNet(nn.Module):
         super().__init__()
         self.config = config
         
-        in_channels = config['model']['in_channels']
-        num_classes = config['model']['num_classes']
-        stem_dim = config['model']['stem_dim']
+        in_channels = config['in_channels']
+        num_classes = config['num_classes']
+        stem_dim = config['stem_dim']
         
         # Stem
         self.stem = nn.Sequential(

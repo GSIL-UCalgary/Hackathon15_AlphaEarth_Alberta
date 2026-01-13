@@ -21,7 +21,7 @@ weight_decay: 0.00001
 # Loss and optimizer
 loss_fn: "cross_entropy"
 optimizer: "adamw"
-scheduler: "reduce_on_plateau"
+scheduler: "cosine"
 
 # Model settings
 ignore_index: -99

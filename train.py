@@ -17,7 +17,6 @@ import copy
 from tqdm import tqdm
 import random
 from sklearn.metrics import confusion_matrix
-from torch.cuda.amp import GradScaler, autocast
 import argparse
 import yaml
 import platform
@@ -43,10 +42,13 @@ set_seed(42)
 def setup_wandb_api_key(api_key_path=None, force_login=False):
     """Setup WandB API key from file or environment, or login interactively"""
     
-    # Check if already logged in
-    if not force_login and wandb.api.api_key:
-        print("✓ WandB already logged in")
-        return True
+    # Check if already logged in (better check)
+    try:
+        if not force_login and wandb.api.api_key:
+            print("✓ WandB already logged in")
+            return True
+    except:
+        pass
     
     # Default path if not specified
     if api_key_path is None:
@@ -164,7 +166,11 @@ class MultisensorDataset(Dataset):
         
         # Apply transforms if any
         if self.transform:
-            image, label = self.transform(image, label)
+            # For transforms that work on single tensors, apply only to image
+            # Or create custom transforms that handle both image and label
+            image = self.transform(image)
+            # Note: Some transforms like random flips should be applied to both
+            # You need custom transform classes for that
         
         return image, label
 
@@ -264,10 +270,20 @@ def create_model(model_name, sensor_name, config):
     input_channels = bands_config[sensor_name]
     num_classes = 13  # From your config
     
+    # Create model configuration dictionary
     model_config = {
-        'num_classes': num_classes,
-        'input_channels': input_channels,
-        'img_size': 224,  # From your config
+        'model': {
+            'in_channels': input_channels,
+            'num_classes': num_classes,
+            'img_size': 224,  # From your config
+            # Add other parameters that your models expect
+            'stem_dim': 32,  # Default value
+            'stem_kernel': 3,  # Default value
+            'stem_padding': 1,  # Default value
+            'stem_downsampling': False,  # Default value
+            'dims': [32, 64, 128, 256],  # Default value
+            'depths': [1, 1, 2, 1],  # Default value
+        }
     }
     
     if model_name == 'MIMUNet':
@@ -283,7 +299,19 @@ def create_model(model_name, sensor_name, config):
     elif model_name == 'TwinsUNet':
         return TwinsUNet(**model_config)
     elif model_name == 'BasicUNet':
-        return BasicUNet(**model_config)
+        model_config = {
+            'in_channels': input_channels,
+            'num_classes': num_classes,
+            'stem_dim': 32,  # From your BasicUNet in unet.py
+            # Add other parameters if your BasicUNet needs them
+            'stem_kernel': 3,
+            'stem_padding': 1,
+            'stem_downsampling': False,
+            'dims': [32, 64, 128, 256],
+            'depths': [1, 1, 2, 1],
+        }
+        return BasicUNet(model_config)  # Pass the config dictionary directly
+    
     elif model_name == 'HRNet':
         return HRNetWrapper(**model_config)
     else:
@@ -296,15 +324,18 @@ class Trainer:
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
-
+        
         # Get label type (default to 'filtered' if not specified)
         label_type = config.get('label_type', 'filtered')
-
         
-        # Create output directory with timestamp
+        # Create output directory with timestamp and label type
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{timestamp}"
+        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{label_type}_{timestamp}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load dataset config BEFORE saving configuration
+        with open(config['dataset_config'], 'r') as f:
+            self.dataset_config = json.load(f)
         
         # Save configuration files immediately
         self.save_configuration()
@@ -320,10 +351,6 @@ class Trainer:
                 dir=str(self.output_dir)  # Save wandb logs to experiment directory
             )
             print(f"WandB Run: {wandb.run.url}")
-        
-        # Load dataset config
-        with open(config['dataset_config'], 'r') as f:
-            self.dataset_config = json.load(f)
         
         # Create model - now using your specific config
         self.model = create_model(
@@ -392,7 +419,6 @@ class Trainer:
                 mode='max',
                 factor=0.5,
                 patience=5,
-                verbose=True
             )
         elif config['scheduler'] == 'step':
             self.scheduler = optim.lr_scheduler.StepLR(
@@ -404,7 +430,10 @@ class Trainer:
             self.scheduler = None
         
         # Mixed precision training
-        self.scaler = GradScaler() if config['use_amp'] else None
+        if config['use_amp']:
+            self.scaler = torch.amp.GradScaler('cuda')  # Updated API
+        else:
+            self.scaler = None
         
         # Get class names from your dataset config
         class_names = []
@@ -557,11 +586,11 @@ class Trainer:
         from torchvision import transforms
         
         # Data augmentation for training
-        train_transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(degrees=30),
-        ])
+        # train_transform = transforms.Compose([
+        #     transforms.RandomHorizontalFlip(p=0.5),
+        #     transforms.RandomVerticalFlip(p=0.5),
+        #     transforms.RandomRotation(degrees=30),
+        # ])
         
         # No augmentation for validation/test
         val_transform = None
@@ -575,7 +604,7 @@ class Trainer:
         sensor_name=self.config['sensor_name'],
         split='train',
         label_type=label_type,
-        transform=train_transform
+        #transform=train_transform
         )
         
         val_dataset = MultisensorDataset(
@@ -637,7 +666,7 @@ class Trainer:
             self.optimizer.zero_grad()
             
             if self.scaler:
-                with autocast():
+                with torch.amp.autocast('cuda'):  # Updated API
                     outputs = self.model(images)
                     loss = self.criterion(outputs, labels)
                 
@@ -926,10 +955,10 @@ def parse_args():
                        help='Type of labels to use: filtered or unfiltered')
     # Paths
     parser.add_argument('--data_root', type=str, 
-                       default=r'D:\Hackathon15_AlphaEarth\train_val_test_patches\patches',
+                       default='./train_val_test_patches/patches',
                        help='Root directory of dataset patches')
     parser.add_argument('--dataset_config', type=str,
-                       default=r'D:\Hackathon15_AlphaEarth\train_val_test_patches\multisensor_dataset_config.json',
+                       default='./train_val_test_patches/multisensor_dataset_config.json',
                        help='Path to dataset configuration JSON')
     parser.add_argument('--output_dir', type=str, default='./experiments',
                        help='Output directory for experiments')
@@ -969,7 +998,7 @@ def parse_args():
                        help='Use Weights & Biases for logging')
     parser.add_argument('--no_wandb', action='store_false', dest='use_wandb',
                        help='Disable Weights & Biases logging')
-    parser.add_argument('--wandb_project', type=str, default='multisensor-segmentation',
+    parser.add_argument('--wandb_project', type=str, default='AlphaEarth_Alberta_2020',
                        help='WandB project name')
     parser.add_argument('--wandb_entity', type=str, default='saeid_taleghani',
                        help='WandB entity/username')
@@ -985,9 +1014,17 @@ def parse_args():
     return parser.parse_args()
 
 def load_config_from_yaml(config_path):
-    """Load configuration from YAML file"""
+    """Load configuration from YAML file and normalize paths"""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+    
+    # Normalize paths to use forward slashes
+    path_keys = ['data_root', 'dataset_config', 'output_dir']
+    for key in path_keys:
+        if key in config:
+            # Convert backslashes to forward slashes
+            config[key] = config[key].replace('\\', '/')
+    
     return config
 
 def parse_class_weights(class_weights_str):
@@ -1019,7 +1056,8 @@ def parse_class_weights(class_weights_str):
         except:
             print(f"Warning: Could not parse class weights: {class_weights_str}")
             return None
-
+        
+        
 def main():
     """Main function to run training"""
     
@@ -1028,71 +1066,85 @@ def main():
     # Set seed
     set_seed(args.seed)
     
-    # Load config from YAML if provided
+    # Start with EMPTY config
+    config = {}
+    
+    # 1. FIRST: Load YAML config (if provided)
     if args.config:
         config = load_config_from_yaml(args.config)
         print(f"Loaded configuration from: {args.config}")
-    else:
-        # Parse class weights
-        class_weights = parse_class_weights(args.class_weights)
-        
-        # Create config from command line arguments
-        config = {
-            # Model and dataset
-            'model_name': args.model_name,
-            'sensor_name': args.sensor_name,
-            'label_type': args.label_type, 
-            # Paths
-            'data_root': args.data_root,
-            'dataset_config': args.dataset_config,
-            'output_dir': args.output_dir,
-            
-            # Training hyperparameters
-            'epochs': args.epochs,
-            'batch_size': args.batch_size,
-            'learning_rate': args.learning_rate,
-            'weight_decay': args.weight_decay,
-            
-            # Loss and optimizer
-            'loss_fn': args.loss_fn,
-            'optimizer': args.optimizer,
-            'scheduler': args.scheduler if args.scheduler != 'none' else None,
-            
-            # Model settings
-            'ignore_index': args.ignore_index,
-            'class_weights': class_weights,
-            
-            # Training settings
-            'use_amp': args.use_amp,
-            'num_workers': args.num_workers,
-            'save_every': args.save_every,
-            
-            # Weights & Biases
-            'use_wandb': args.use_wandb,
-            'wandb_project': args.wandb_project,
-            'wandb_entity': args.wandb_entity,
-            
-            # Seed
-            'seed': args.seed,
-        }
     
-     # Setup WandB login if enabled
+    # 2. THEN: Apply COMMAND LINE arguments (override YAML)
+    # Convert args to dict, exclude 'config'
+    args_dict = vars(args)
+    for key, value in args_dict.items():
+        if key != 'config' and value is not None:
+            # Special handling for class_weights
+            if key == 'class_weights':
+                value = parse_class_weights(value)
+            config[key] = value
+    
+    # 3. FINALLY: Set any missing values to argparse defaults
+    defaults = {
+        'model_name': 'BasicUNet',
+        'sensor_name': 'landsat8',
+        'label_type': 'filtered',
+        'data_root': './train_val_test_patches/patches',
+        'dataset_config': './train_val_test_patches/multisensor_dataset_config.json',
+        'output_dir': './experiments',
+        'epochs': 100,
+        'batch_size': 16,
+        'learning_rate': 1e-4,
+        'weight_decay': 1e-5,
+        'loss_fn': 'cross_entropy',
+        'optimizer': 'adamw',
+        'scheduler': 'reduce_on_plateau',
+        'ignore_index': -99,
+        'class_weights': None,
+        'use_amp': True,
+        'num_workers': 4,
+        'save_every': 10,
+        'use_wandb': True,
+        'wandb_project': 'multisensor',  # This default won't be used if YAML has it
+        'wandb_entity': 'saeid_taleghani',
+        'seed': 42
+    }
+    
+    for key, default_value in defaults.items():
+        if key not in config:
+            config[key] = default_value
+    
+    # Handle special cases
+    if config['scheduler'] == 'none':
+        config['scheduler'] = None
+
+    # Setup WandB login if enabled
     if config['use_wandb']:
         print("\n" + "="*60)
         print("Setting up Weights & Biases")
         print("="*60)
         
-        # Call your existing setup function
+        # Setup API key
         setup_wandb_api_key()
         
-        # Verify we have an API key
-        if 'WANDB_API_KEY' not in os.environ:
-            print("⚠ No WandB API key found. Disabling WandB.")
+        # Try to initialize wandb to see if it works
+        try:
+            # Test if we can initialize wandb
+            test_run = wandb.init(
+                project=config['wandb_project'],
+                entity=config.get('wandb_entity', None),
+                name="test_init",
+                mode="disabled"  # Start in disabled mode for testing
+            )
+            test_run.finish()
+            print("✓ WandB initialization successful")
+        except Exception as e:
+            print(f"⚠ WandB initialization failed: {e}")
+            print("Disabling WandB for this run.")
             config['use_wandb'] = False
-        else:
-            print("✓ WandB API key loaded successfully")
+        
         print("="*60 + "\n")
-
+        
     # Create trainer and train
     trainer = Trainer(config)
     test_metrics = trainer.train()
