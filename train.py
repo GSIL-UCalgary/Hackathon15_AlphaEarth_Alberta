@@ -817,7 +817,7 @@ class Trainer:
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
                 
                 # Save checkpoint
-                checkpoint_path = self.output_dir / f"best_model_epoch_{epoch}.pth"
+                checkpoint_path = self.output_dir / f"best_model.pth"
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.best_model_state,
@@ -1066,54 +1066,48 @@ def main():
     # Set seed
     set_seed(args.seed)
     
-    # Start with EMPTY config
-    config = {}
+    # Start with argparse defaults as base
+    config = {
+        'model_name': args.model_name,
+        'sensor_name': args.sensor_name,
+        'label_type': args.label_type,
+        'data_root': args.data_root,
+        'dataset_config': args.dataset_config,
+        'output_dir': args.output_dir,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'weight_decay': args.weight_decay,
+        'loss_fn': args.loss_fn,
+        'optimizer': args.optimizer,
+        'scheduler': args.scheduler,
+        'ignore_index': args.ignore_index,
+        'class_weights': parse_class_weights(args.class_weights),
+        'use_amp': args.use_amp,
+        'num_workers': args.num_workers,
+        'save_every': args.save_every,
+        'use_wandb': args.use_wandb,
+        'wandb_project': args.wandb_project,
+        'wandb_entity': args.wandb_entity,
+        'seed': args.seed,
+    }
     
-    # 1. FIRST: Load YAML config (if provided)
+    # 1. Load YAML config (if provided) to OVERRIDE defaults
     if args.config:
-        config = load_config_from_yaml(args.config)
+        yaml_config = load_config_from_yaml(args.config)
+        # Update config dict with YAML values
+        for key, value in yaml_config.items():
+            if value is not None:  # Only update if value is provided
+                config[key] = value
         print(f"Loaded configuration from: {args.config}")
-    
-    # 2. THEN: Apply COMMAND LINE arguments (override YAML)
-    # Convert args to dict, exclude 'config'
+    # 2. Apply COMMAND LINE arguments to OVERRIDE both defaults and YAML
     args_dict = vars(args)
     for key, value in args_dict.items():
         if key != 'config' and value is not None:
-            # Special handling for class_weights
+            # Special handling for boolean flags and class_weights
             if key == 'class_weights':
                 value = parse_class_weights(value)
             config[key] = value
-    
-    # 3. FINALLY: Set any missing values to argparse defaults
-    defaults = {
-        'model_name': 'BasicUNet',
-        'sensor_name': 'landsat8',
-        'label_type': 'filtered',
-        'data_root': './train_val_test_patches/patches',
-        'dataset_config': './train_val_test_patches/multisensor_dataset_config.json',
-        'output_dir': './experiments',
-        'epochs': 100,
-        'batch_size': 16,
-        'learning_rate': 1e-4,
-        'weight_decay': 1e-5,
-        'loss_fn': 'cross_entropy',
-        'optimizer': 'adamw',
-        'scheduler': 'reduce_on_plateau',
-        'ignore_index': -99,
-        'class_weights': None,
-        'use_amp': True,
-        'num_workers': 4,
-        'save_every': 10,
-        'use_wandb': True,
-        'wandb_project': 'multisensor',  # This default won't be used if YAML has it
-        'wandb_entity': 'saeid_taleghani',
-        'seed': 42
-    }
-    
-    for key, default_value in defaults.items():
-        if key not in config:
-            config[key] = default_value
-    
     # Handle special cases
     if config['scheduler'] == 'none':
         config['scheduler'] = None
