@@ -1,13 +1,12 @@
 # Multi-sensor Semantic Segmentation Configuration
-# landsat8_config.yaml
-# How to run:  python train.py --model_name BasicUNet --sensor_name landsat8 --label_type filtered
-
+# sentinel2_config.yaml
+# python train.py --config config/sentinel2_config.yaml
 # Model and dataset
 model_name: "BasicUNet"
-sensor_name: "sentinel2" # landsat8, alphaearth
-label_type: "filtered"  # or "unfiltered"
+sensor_name: "sentinel2" # landsat8 OR alphaearth
+label_type: "filtered" # or "unfiltered"
 
-# Paths - Use absolute paths or set them relative to project root
+# Paths
 data_root: "./train_val_test_patches/patches"
 dataset_config: "./train_val_test_patches/multisensor_dataset_config.json"
 output_dir: "./experiments"
@@ -25,7 +24,7 @@ scheduler: "cosine"
 
 # Model settings
 ignore_index: -99
-class_weights: null  # Optional: path to JSON file or list [1.0, 2.0, ...]
+class_weights: null
 
 # Training settings
 use_amp: true

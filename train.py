@@ -937,79 +937,12 @@ class Trainer:
         return test_metrics
 
 def parse_args():
-    """Parse command line arguments"""
+    """Parse command line arguments - only config file needed"""
     parser = argparse.ArgumentParser(description='Train multi-sensor segmentation model')
     
-    # Model and dataset
-    parser.add_argument('--model_name', type=str, default='BasicUNet',
-                       choices=['BasicUNet', 'MIMUNet', 'FocalUNet', 'SepViTUNet', 
-                                'SwinUNet', 'CATUNet', 'TwinsUNet', 'HRNet'],
-                       help='Model architecture to use')
-    # Sensor type
-    parser.add_argument('--sensor_name', type=str, default='landsat8',
-                       choices=['landsat8', 'sentinel2', 'alphaearth'],
-                       help='Sensor to train on')
-    # Label type (filtered vs unfiltered)
-    parser.add_argument('--label_type', type=str, default='filtered',
-                       choices=['filtered', 'unfiltered'],
-                       help='Type of labels to use: filtered or unfiltered')
-    # Paths
-    parser.add_argument('--data_root', type=str, 
-                       default='./train_val_test_patches/patches',
-                       help='Root directory of dataset patches')
-    parser.add_argument('--dataset_config', type=str,
-                       default='./train_val_test_patches/multisensor_dataset_config.json',
-                       help='Path to dataset configuration JSON')
-    parser.add_argument('--output_dir', type=str, default='./experiments',
-                       help='Output directory for experiments')
-    
-    # Training hyperparameters
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Weight decay')
-    
-    # Loss and optimizer
-    parser.add_argument('--loss_fn', type=str, default='cross_entropy',
-                       choices=['cross_entropy', 'focal'], help='Loss function')
-    parser.add_argument('--optimizer', type=str, default='adamw',
-                       choices=['adam', 'adamw', 'sgd'], help='Optimizer')
-    parser.add_argument('--scheduler', type=str, default='reduce_on_plateau',
-                       choices=['cosine', 'reduce_on_plateau', 'step', 'none'], help='Learning rate scheduler')
-    
-    # Model settings
-    parser.add_argument('--ignore_index', type=int, default=-99,
-                       help='Index to ignore in loss calculation')
-    parser.add_argument('--class_weights', type=str, default=None,
-                       help='Path to JSON file with class weights or comma-separated list')
-    
-    # Training settings
-    parser.add_argument('--use_amp', action='store_true', default=True,
-                       help='Use automatic mixed precision training')
-    parser.add_argument('--no_amp', action='store_false', dest='use_amp',
-                       help='Disable automatic mixed precision training')
-    parser.add_argument('--num_workers', type=int, default=4,
-                       help='Number of data loader workers')
-    parser.add_argument('--save_every', type=int, default=10,
-                       help='Save checkpoint every N epochs')
-    
-    # Weights & Biases
-    parser.add_argument('--use_wandb', action='store_true', default=True,
-                       help='Use Weights & Biases for logging')
-    parser.add_argument('--no_wandb', action='store_false', dest='use_wandb',
-                       help='Disable Weights & Biases logging')
-    parser.add_argument('--wandb_project', type=str, default='AlphaEarth_Alberta_2020',
-                       help='WandB project name')
-    parser.add_argument('--wandb_entity', type=str, default='saeid_taleghani',
-                       help='WandB entity/username')
-    
-    # Config file
-    parser.add_argument('--config', type=str, default=None,
-                       help='Path to YAML config file (overrides command line args)')
-    
-    # Seed
-    parser.add_argument('--seed', type=int, default=42,
-                       help='Random seed for reproducibility')
+    # Only config file argument
+    parser.add_argument('--config', type=str, required=True,
+                       help='Path to YAML config file')
     
     return parser.parse_args()
 
@@ -1059,59 +992,49 @@ def parse_class_weights(class_weights_str):
         
         
 def main():
-    """Main function to run training"""
+    """Main function to run training - YAML config only"""
     
     args = parse_args()
     
-    # Set seed
-    set_seed(args.seed)
+    # Load configuration from YAML file
+    config = load_config_from_yaml(args.config)
+    print(f"Loaded configuration from: {args.config}")
     
-    # Start with argparse defaults as base
-    config = {
-        'model_name': args.model_name,
-        'sensor_name': args.sensor_name,
-        'label_type': args.label_type,
-        'data_root': args.data_root,
-        'dataset_config': args.dataset_config,
-        'output_dir': args.output_dir,
-        'epochs': args.epochs,
-        'batch_size': args.batch_size,
-        'learning_rate': args.learning_rate,
-        'weight_decay': args.weight_decay,
-        'loss_fn': args.loss_fn,
-        'optimizer': args.optimizer,
-        'scheduler': args.scheduler,
-        'ignore_index': args.ignore_index,
-        'class_weights': parse_class_weights(args.class_weights),
-        'use_amp': args.use_amp,
-        'num_workers': args.num_workers,
-        'save_every': args.save_every,
-        'use_wandb': args.use_wandb,
-        'wandb_project': args.wandb_project,
-        'wandb_entity': args.wandb_entity,
-        'seed': args.seed,
-    }
+    # Set seed from config
+    set_seed(config.get('seed', 42))
     
-    # 1. Load YAML config (if provided) to OVERRIDE defaults
-    if args.config:
-        yaml_config = load_config_from_yaml(args.config)
-        # Update config dict with YAML values
-        for key, value in yaml_config.items():
-            if value is not None:  # Only update if value is provided
-                config[key] = value
-        print(f"Loaded configuration from: {args.config}")
-    # 2. Apply COMMAND LINE arguments to OVERRIDE both defaults and YAML
-    args_dict = vars(args)
-    for key, value in args_dict.items():
-        if key != 'config' and value is not None:
-            # Special handling for boolean flags and class_weights
-            if key == 'class_weights':
-                value = parse_class_weights(value)
-            config[key] = value
+    # Ensure required fields are present
+    required_fields = ['model_name', 'sensor_name', 'label_type', 
+                       'data_root', 'dataset_config', 'output_dir',
+                       'epochs', 'batch_size', 'learning_rate']
+    
+    for field in required_fields:
+        if field not in config:
+            raise ValueError(f"Required field '{field}' not found in config file")
+    
+    # Set defaults for optional fields if not provided
+    config.setdefault('weight_decay', 1e-5)
+    config.setdefault('loss_fn', 'cross_entropy')
+    config.setdefault('optimizer', 'adamw')
+    config.setdefault('scheduler', 'reduce_on_plateau')
+    config.setdefault('ignore_index', -99)
+    config.setdefault('class_weights', None)
+    config.setdefault('use_amp', True)
+    config.setdefault('num_workers', 4)
+    config.setdefault('save_every', 10)
+    config.setdefault('use_wandb', True)
+    config.setdefault('wandb_project', 'AlphaEarth_Alberta_2020')
+    config.setdefault('wandb_entity', 'saeid_taleghani')
+    config.setdefault('seed', 42)
+    
     # Handle special cases
-    if config['scheduler'] == 'none':
+    if config.get('scheduler') == 'none':
         config['scheduler'] = None
-
+    
+    # Parse class weights if provided as string
+    if isinstance(config['class_weights'], str):
+        config['class_weights'] = parse_class_weights(config['class_weights'])
+    
     # Setup WandB login if enabled
     if config['use_wandb']:
         print("\n" + "="*60)
@@ -1138,7 +1061,7 @@ def main():
             config['use_wandb'] = False
         
         print("="*60 + "\n")
-        
+    
     # Create trainer and train
     trainer = Trainer(config)
     test_metrics = trainer.train()
