@@ -157,11 +157,16 @@ class MultisensorDataset(Dataset):
         import rasterio
         with rasterio.open(img_path) as src:
             image = src.read()  # Shape: (C, H, W)
+        # This assumes your UInt8 data is scaled from original values to 0-255
+        image = image.astype(np.float32) / 255.0
+
         with rasterio.open(label_path) as src:
             label = src.read(1)  # Shape: (H, W)
         
+        
+
         # Convert to tensors
-        image = torch.from_numpy(image).float()
+        image = torch.from_numpy(image).float() # Already [0, 1]
         label = torch.from_numpy(label).long()
         
         # Apply transforms if any

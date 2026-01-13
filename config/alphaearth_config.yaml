@@ -1,0 +1,40 @@
+# Multi-sensor Semantic Segmentation Configuration
+# sentinel2_config.yaml
+# python train.py --config config/sentinel2_config.yaml
+# Model and dataset
+model_name: "BasicUNet"
+sensor_name: "alphaearth" # landsat8 OR alphaearth
+label_type: "filtered" # or "unfiltered"
+
+# Paths
+data_root: "./train_val_test_patches/patches"
+dataset_config: "./train_val_test_patches/multisensor_dataset_config.json"
+output_dir: "./experiments"
+
+# Training hyperparameters
+epochs: 100
+batch_size: 16
+learning_rate: 0.0001
+weight_decay: 0.00001
+
+# Loss and optimizer
+loss_fn: "cross_entropy"
+optimizer: "adamw"
+scheduler: "cosine"
+
+# Model settings
+ignore_index: -99
+class_weights: null
+
+# Training settings
+use_amp: true
+num_workers: 4
+save_every: 10
+
+# Weights & Biases
+use_wandb: true
+wandb_project: "AlphaEarth_Alberta_2020"
+wandb_entity: "saeid_taleghani"
+
+# Random seed
+seed: 42
