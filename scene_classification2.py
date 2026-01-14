@@ -61,7 +61,7 @@ SCENE_PATHS = {
 
 # ==================== REMAPPED GROUND TRUTH PATH ====================
 # Updated to use the remapped ground truth
-REMAṔPED_GROUND_TRUTH_PATH = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif"
+REMAPPED_GROUND_TRUTH_PATH = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif"
 
 # Alberta class names (0-12)
 ALBERTA_CLASS_NAMES = [
@@ -133,7 +133,12 @@ def create_model(model_name, sensor_name, config):
         }
         return BasicUNet(model_config)
     elif model_name == 'HRNet':
-        return HRNetWrapper(**model_config)
+        # HRNetWrapper expects a dictionary with 'in_channels' and 'num_classes'
+        hrnet_config = {
+            'in_channels': input_channels,
+            'num_classes': num_classes
+        }
+        return HRNetWrapper(hrnet_config)
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
@@ -1312,21 +1317,26 @@ def load_model_from_checkpoint(checkpoint_path):
     
     return model, model_name, sensor_name, num_classes
 
-def find_experiment_dirs(base_path, sensor_name=None):
-    """Find experiment directories containing trained models"""
+
+def find_experiment_dirs(base_path, sensor_name=None, model_name=None):
+    """Find experiment directories containing trained models, optionally filtered by sensor and model name"""
     base_dir = Path(base_path)
     experiment_dirs = []
     
     for exp_dir in base_dir.iterdir():
-        if exp_dir.is_dir() and "BasicUNet" in exp_dir.name:
+        if exp_dir.is_dir():
+            # Check if the directory name contains the model name (if provided)
+            if model_name and model_name not in exp_dir.name:
+                continue
+            
+            # Check if it contains the sensor name (if provided)
+            if sensor_name and sensor_name not in exp_dir.name:
+                continue
+            
             # Check if it contains a trained model
             model_path = exp_dir / "best_model.pth"
             if model_path.exists():
-                # Optional: filter by sensor name
-                if sensor_name and sensor_name in exp_dir.name:
-                    experiment_dirs.append(exp_dir)
-                elif not sensor_name:
-                    experiment_dirs.append(exp_dir)
+                experiment_dirs.append(exp_dir)
     
     return sorted(experiment_dirs)
 
@@ -1354,6 +1364,10 @@ def main():
     parser.add_argument('--sensor_name', type=str, required=True,
                        choices=['landsat8', 'sentinel2', 'alphaearth'],
                        help='Sensor name (determines which scene to classify)')
+    
+    # Model name (optional) to filter experiments
+    parser.add_argument('--model_name', type=str, default=None, required=True,
+                       help='Model name to filter experiment directories (e.g., HRNet, BasicUNet, etc.)')
     
     # Classification parameters
     parser.add_argument('--patch_size', type=int, default=224,
@@ -1387,31 +1401,36 @@ def main():
     scene_path = get_scene_path_for_sensor(args.sensor_name)
     print(f"Sensor: {args.sensor_name}")
     print(f"Scene path: {scene_path}")
-    print(f"Remapped ground truth: {REMAṔPED_GROUND_TRUTH_PATH}")
+    print(f"Remapped ground truth: {REMAPPED_GROUND_TRUTH_PATH}")
     
-    # Find experiment directories
+        # Find experiment directories
     base_experiments_dir = Path("/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/experiments")
     
     if args.experiment_dir:
         # Use provided experiment directory
         experiment_dirs = [Path(args.experiment_dir)]
     elif args.process_all_experiments:
-        # Process all experiment directories for this sensor
-        experiment_dirs = find_experiment_dirs(base_experiments_dir, args.sensor_name)
-        print(f"\nFound {len(experiment_dirs)} experiment directories for {args.sensor_name}:")
+        # Process all experiment directories for this sensor and model
+        experiment_dirs = find_experiment_dirs(base_experiments_dir, args.sensor_name, args.model_name)
+        print(f"\nFound {len(experiment_dirs)} experiment directories for {args.sensor_name}" + 
+              (f" and model {args.model_name}" if args.model_name else "") + ":")
         for exp_dir in experiment_dirs:
             print(f"  - {exp_dir.name}")
     else:
         # Find matching experiment directory (most recent)
-        experiment_dirs = find_experiment_dirs(base_experiments_dir, args.sensor_name)
+        experiment_dirs = find_experiment_dirs(base_experiments_dir, args.sensor_name, args.model_name)
         
         if len(experiment_dirs) == 0:
-            raise ValueError(f"No experiment directory found for sensor: {args.sensor_name}")
+            error_msg = f"No experiment directory found for sensor: {args.sensor_name}"
+            if args.model_name:
+                error_msg += f" and model: {args.model_name}"
+            raise ValueError(error_msg)
         
         # Sort by creation time (newest first)
         experiment_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         
-        print(f"\nFound {len(experiment_dirs)} experiment directories for {args.sensor_name}:")
+        print(f"\nFound {len(experiment_dirs)} experiment directories for {args.sensor_name}" + 
+              (f" and model {args.model_name}" if args.model_name else "") + ":")
         for i, exp_dir in enumerate(experiment_dirs[:5]):  # Show top 5
             print(f"  {i+1}. {exp_dir.name} (modified: {datetime.fromtimestamp(exp_dir.stat().st_mtime)})")
         

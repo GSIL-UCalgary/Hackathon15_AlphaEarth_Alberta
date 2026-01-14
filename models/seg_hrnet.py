@@ -265,15 +265,19 @@ blocks_dict = {
 
 
 class HighResolutionNet(nn.Module):
-    def __init__(self, config, **kwargs):
+    def __init__(self, config=None, in_channels=3, num_classes=19, **kwargs):
         global ALIGN_CORNERS
-        # Use dictionary access instead of attribute access
-        extra = config['MODEL']['EXTRA']
         super(HighResolutionNet, self).__init__()
+        
+        # If config is provided, use it. Otherwise use defaults.
+        if config is None:
+            config = self.get_default_config(num_classes)
+        
+        extra = config['MODEL']['EXTRA']
         ALIGN_CORNERS = config['MODEL']['ALIGN_CORNERS']
         
-        # stem net
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
+        # stem net - MODIFIED: Use in_channels from parameter
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1 = BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn2 = BatchNorm2d(64, momentum=BN_MOMENTUM)
@@ -329,11 +333,57 @@ class HighResolutionNet(nn.Module):
             nn.ReLU(inplace=relu_inplace),
             nn.Conv2d(
                 in_channels=last_inp_channels,
-                out_channels=config['DATASET']['NUM_CLASSES'],
+                out_channels=num_classes,
                 kernel_size=extra['FINAL_CONV_KERNEL'],
                 stride=1,
                 padding=1 if extra['FINAL_CONV_KERNEL'] == 3 else 0)
         )
+
+    def get_default_config(self, num_classes=19):
+        """Return default HRNet configuration"""
+        return {
+            'MODEL': {
+                'ALIGN_CORNERS': True,
+                'EXTRA': {
+                    'STAGE1': {
+                        'NUM_MODULES': 1,
+                        'NUM_BRANCHES': 1,
+                        'BLOCK': 'BOTTLENECK',
+                        'NUM_BLOCKS': [4],
+                        'NUM_CHANNELS': [64],
+                        'FUSE_METHOD': 'SUM'
+                    },
+                    'STAGE2': {
+                        'NUM_MODULES': 1,
+                        'NUM_BRANCHES': 2,
+                        'BLOCK': 'BASIC',
+                        'NUM_BLOCKS': [4, 4],
+                        'NUM_CHANNELS': [32, 64],
+                        'FUSE_METHOD': 'SUM'
+                    },
+                    'STAGE3': {
+                        'NUM_MODULES': 4,
+                        'NUM_BRANCHES': 3,
+                        'BLOCK': 'BASIC',
+                        'NUM_BLOCKS': [4, 4, 4],
+                        'NUM_CHANNELS': [32, 64, 128],
+                        'FUSE_METHOD': 'SUM'
+                    },
+                    'STAGE4': {
+                        'NUM_MODULES': 3,
+                        'NUM_BRANCHES': 4,
+                        'BLOCK': 'BASIC',
+                        'NUM_BLOCKS': [4, 4, 4, 4],
+                        'NUM_CHANNELS': [32, 64, 128, 256],
+                        'FUSE_METHOD': 'SUM'
+                    },
+                    'FINAL_CONV_KERNEL': 1
+                }
+            },
+            'DATASET': {
+                'NUM_CLASSES': num_classes
+            }
+        }
 
     def _make_transition_layer(
             self, num_channels_pre_layer, num_channels_cur_layer):
@@ -499,13 +549,16 @@ class HRNetWrapper(nn.Module):
     def __init__(self, config):
         super().__init__()
         
-        # Pass the config dictionary directly
-        self.model = HighResolutionNet(config)
+        # config should have 'in_channels' and 'num_classes' keys
+        in_channels = config['in_channels']
+        num_classes = config['num_classes']
         
-        # Modify first convolution for the correct number of input channels
-        self.model.conv1 = nn.Conv2d(config['model']['in_channels'], 64, 
-                                   kernel_size=3, stride=2, padding=1, bias=False)
-        self.model.bn1 = BatchNorm2d(64, momentum=BN_MOMENTUM)
+        # Create HRNet with default config
+        self.model = HighResolutionNet(
+            config=None,  # Use defaults
+            in_channels=in_channels,
+            num_classes=num_classes
+        )
         
         # Initialize weights
         self.model.init_weights('')

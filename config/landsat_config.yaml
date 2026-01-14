@@ -3,7 +3,7 @@
 # python scene_classification.py --sensor_name landsat8
 
 # Model and dataset
-model_name: "BasicUNet"
+model_name: "HRNet" # HRNet   BasicUNet
 sensor_name: "landsat8" # sentinel2 OR alphaearth
 label_type: "filtered"  # or "unfiltered"
 

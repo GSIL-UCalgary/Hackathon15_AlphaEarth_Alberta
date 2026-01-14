@@ -20,7 +20,7 @@ from sklearn.metrics import confusion_matrix
 import argparse
 import yaml
 import platform
-
+import rasterio
 # Import your models
 from models import (
     MIMUNet, FocalUNet, SepViTUNet, SwinUNet, 
@@ -154,7 +154,7 @@ class MultisensorDataset(Dataset):
         label_path = self.label_files[idx]
         
         # Read GeoTIFF files using rasterio
-        import rasterio
+        
         with rasterio.open(img_path) as src:
             image = src.read()  # Shape: (C, H, W)
         # This assumes your UInt8 data is scaled from original values to 0-255
@@ -163,8 +163,6 @@ class MultisensorDataset(Dataset):
         with rasterio.open(label_path) as src:
             label = src.read(1)  # Shape: (H, W)
         
-        
-
         # Convert to tensors
         image = torch.from_numpy(image).float() # Already [0, 1]
         label = torch.from_numpy(label).long()
@@ -261,10 +259,9 @@ class SegmentationMetrics:
     
     def reset(self):
         self.confusion_matrix = np.zeros((self.num_classes, self.num_classes))
-
 def create_model(model_name, sensor_name, config):
     """Create model based on name and sensor configuration"""
-    
+    print(f" The {model_name} model is being trained using {sensor_name} dataset")
     # Get number of bands from your config
     bands_config = {
         'landsat8': 6,
@@ -275,22 +272,15 @@ def create_model(model_name, sensor_name, config):
     input_channels = bands_config[sensor_name]
     num_classes = 13  # From your config
     
-    # Create model configuration dictionary
-    model_config = {
-        'model': {
+    if model_name == 'HRNet':
+        # HRNetWrapper expects a dictionary with 'in_channels' and 'num_classes'
+        hrnet_config = {
             'in_channels': input_channels,
-            'num_classes': num_classes,
-            'img_size': 224,  # From your config
-            # Add other parameters that your models expect
-            'stem_dim': 32,  # Default value
-            'stem_kernel': 3,  # Default value
-            'stem_padding': 1,  # Default value
-            'stem_downsampling': False,  # Default value
-            'dims': [32, 64, 128, 256],  # Default value
-            'depths': [1, 1, 2, 1],  # Default value
+            'num_classes': num_classes
         }
-    }
+        return HRNetWrapper(hrnet_config)
     
+    model_config= {}
     if model_name == 'MIMUNet':
         return MIMUNet(**model_config)
     elif model_name == 'FocalUNet':
@@ -304,7 +294,8 @@ def create_model(model_name, sensor_name, config):
     elif model_name == 'TwinsUNet':
         return TwinsUNet(**model_config)
     elif model_name == 'BasicUNet':
-        model_config = {
+        # BasicUNet might need different handling too
+        basic_config = {
             'in_channels': input_channels,
             'num_classes': num_classes,
             'stem_dim': 32,  # From your BasicUNet in unet.py
@@ -316,9 +307,6 @@ def create_model(model_name, sensor_name, config):
             'depths': [1, 1, 2, 1],
         }
         return BasicUNet(model_config)  # Pass the config dictionary directly
-    
-    elif model_name == 'HRNet':
-        return HRNetWrapper(**model_config)
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
