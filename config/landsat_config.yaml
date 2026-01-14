@@ -1,5 +1,6 @@
 # Multi-sensor Semantic Segmentation Configuration
-# python train.py --sensor_name landsat8
+# python train.py --config config/landsat_config.yaml
+# python scene_classification.py --sensor_name landsat8
 
 # Model and dataset
 model_name: "BasicUNet"

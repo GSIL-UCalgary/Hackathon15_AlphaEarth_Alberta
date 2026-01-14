@@ -1,0 +1,20 @@
+<PAMDataset>
+  <PAMRasterBand band="1">
+    <CategoryNames>
+      <Category>255:0:0:0:255:NoData/Outside Alberta</Category>
+      <Category>0:0:61:0:255:Temperate needleleaf forest</Category>
+      <Category>1:148:156:112:255:Sub-polar taiga forest</Category>
+      <Category>2:20:140:61:255:Temperate broadleaf forest</Category>
+      <Category>3:91:117:43:255:Mixed forest</Category>
+      <Category>4:179:138:51:255:Temperate shrubland</Category>
+      <Category>5:225:207:138:255:Temperate grassland</Category>
+      <Category>6:186:212:143:255:Polar grassland-lichen</Category>
+      <Category>7:107:163:138:255:Wetland</Category>
+      <Category>8:230:174:102:255:Cropland</Category>
+      <Category>9:168:171:174:255:Barren lands</Category>
+      <Category>10:220:33:38:255:Urban</Category>
+      <Category>11:76:112:163:255:Water</Category>
+      <Category>12:255:250:255:255:Snow/ice</Category>
+    </CategoryNames>
+  </PAMRasterBand>
+</PAMDataset>
