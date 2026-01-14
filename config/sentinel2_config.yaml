@@ -1,8 +1,8 @@
 # Multi-sensor Semantic Segmentation Configuration
 # python train.py --config config/sentinel2_config.yaml
-# python scene_classification.py --sensor_name sentinel2
+# python scene_classification.py --sensor_name sentinel2 --model_name HRNet
 # Model and dataset
-model_name: "HRNet"
+model_name: "SwinUNet"  # SwinUNet, BasicUNet, HRNet
 sensor_name: "sentinel2" # landsat8 OR alphaearth
 label_type: "filtered" # or "unfiltered"
 

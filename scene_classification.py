@@ -578,7 +578,7 @@ def classify_full_scene(
     model_config,
     experiment_dir,
     patch_size=224,
-    batch_size=8,
+    batch_size=16,
     device=None,
     overlap=0,
     save_probabilities=False,

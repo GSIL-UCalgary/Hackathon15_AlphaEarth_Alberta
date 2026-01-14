@@ -23,7 +23,7 @@ import platform
 import rasterio
 # Import your models
 from models import (
-    MIMUNet, FocalUNet, SepViTUNet, SwinUNet, 
+    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
     CATUNet, TwinsUNet, BasicUNet, HRNetWrapper
 )
 
@@ -259,56 +259,84 @@ class SegmentationMetrics:
     
     def reset(self):
         self.confusion_matrix = np.zeros((self.num_classes, self.num_classes))
+
+
 def create_model(model_name, sensor_name, config):
     """Create model based on name and sensor configuration"""
-    print(f" The {model_name} model is being trained using {sensor_name} dataset")
-    # Get number of bands from your config
+    print(f"The {model_name} model is being trained using {sensor_name} dataset")
+
+    # --------------------------------------------------
+    # Input channels per sensor
+    # --------------------------------------------------
     bands_config = {
         'landsat8': 6,
         'sentinel2': 10,
         'alphaearth': 64
     }
-    
+
     input_channels = bands_config[sensor_name]
-    num_classes = 13  # From your config
-    
+    num_classes = 13  # fixed from your setup
+
+    # --------------------------------------------------
+    # HRNet
+    # --------------------------------------------------
     if model_name == 'HRNet':
-        # HRNetWrapper expects a dictionary with 'in_channels' and 'num_classes'
         hrnet_config = {
             'in_channels': input_channels,
             'num_classes': num_classes
         }
         return HRNetWrapper(hrnet_config)
-    
-    model_config= {}
-    if model_name == 'MIMUNet':
-        return MIMUNet(**model_config)
-    elif model_name == 'FocalUNet':
-        return FocalUNet(**model_config)
-    elif model_name == 'SepViTUNet':
-        return SepViTUNet(**model_config)
+
+    # --------------------------------------------------
+    # SwinUNet
+    # --------------------------------------------------
     elif model_name == 'SwinUNet':
-        return SwinUNet(**model_config)
-    elif model_name == 'CATUNet':
-        return CATUNet(**model_config)
-    elif model_name == 'TwinsUNet':
-        return TwinsUNet(**model_config)
+        swin_config = {
+            'img_size': 224,
+            'in_channels': input_channels,
+            'num_classes': num_classes,
+            'embed_dim': 32,
+            'depths': [1, 1, 2, 1],
+            'heads': [1, 2, 4, 8],
+            'patch_size': 4,
+            'window_size': 7
+        }
+        return SwinUNetWrapper(**swin_config)
+
+
+    # --------------------------------------------------
+    # Basic UNet
+    # --------------------------------------------------
     elif model_name == 'BasicUNet':
-        # BasicUNet might need different handling too
         basic_config = {
             'in_channels': input_channels,
             'num_classes': num_classes,
-            'stem_dim': 32,  # From your BasicUNet in unet.py
-            # Add other parameters if your BasicUNet needs them
+            'stem_dim': 32,
             'stem_kernel': 3,
             'stem_padding': 1,
             'stem_downsampling': False,
             'dims': [32, 64, 128, 256],
             'depths': [1, 1, 2, 1],
         }
-        return BasicUNet(model_config)  # Pass the config dictionary directly
+        return BasicUNet(basic_config)
+
+    # --------------------------------------------------
+    # Other models (unchanged)
+    # --------------------------------------------------
+    model_config = {}
+    if model_name == 'MIMUNet':
+        return MIMUNet(**model_config)
+    elif model_name == 'FocalUNet':
+        return FocalUNet(**model_config)
+    elif model_name == 'SepViTUNet':
+        return SepViTUNet(**model_config)
+    elif model_name == 'CATUNet':
+        return CATUNet(**model_config)
+    elif model_name == 'TwinsUNet':
+        return TwinsUNet(**model_config)
     else:
         raise ValueError(f"Unknown model: {model_name}")
+
 
 class Trainer:
     """Main training class with Config Saving"""
