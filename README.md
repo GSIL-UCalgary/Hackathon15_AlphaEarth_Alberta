@@ -150,6 +150,6 @@ python train.py --config config/alphaearth_config.yaml --label_type filtered
 
 ### 5. Scene classifications
 
-First, run the `create_alberta_ground_truth.py` code to get landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif
+First, run the `python create_alberta_ground_truth.py` code to get landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif
 
-Then, run 'scene_classification.py' to get the scene classificaiton and classification metrics.
+Then, run `python scene_classification.py --sensor_name landsat8 --evaluate` to get the scene classificaiton and classification metrics.

@@ -1,6 +1,27 @@
 """
 Scene Classification for Multi-Sensor Data
 Classifies entire scenes and saves in the same folder as trained model
+
+# Basic classification
+python scene_classification.py --sensor_name landsat8
+
+# Classification with evaluation
+python scene_classification.py --sensor_name landsat8 --evaluate
+
+# Process all experiments
+python scene_classification.py --sensor_name landsat8 --evaluate --process_all_experiments
+
+The --process_all_experiments flag processes ALL experiment 
+directories for a given sensor instead of just processing the most recent one.
+
+
+Outputs:
+
+classification_metrics_[experiment]_[timestamp].txt - Main metrics summary
+
+classification_metrics_[experiment]_[timestamp].json - Detailed metrics for programmatic use
+
+The classified scene and RGB visualizations are saved using GDAL with EPSG:3979 CRS
 """
 
 import os
@@ -38,13 +59,26 @@ SCENE_PATHS = {
     'alphaearth': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/AlphaEarth_Dataset/Alberta_2020_NAD83_StatsCan_AlphaEarth_30m_Mosaics_EPSG_3979_Clipped_Stack/Alberta_2020_AlphaEarth_Stacked_64Bands.tif"
 }
 
-# ==================== LABEL MAP PATHS ====================
-# Add your label map paths here
-LABEL_MAP_PATHS = {
-    'landsat8': "/path/to/landsat8_label_map.tif",  # Update with actual path
-    'sentinel2': "/path/to/sentinel2_label_map.tif",  # Update with actual path
-    'alphaearth': "/path/to/alphaearth_label_map.tif"  # Update with actual path
-}
+# ==================== REMAPPED GROUND TRUTH PATH ====================
+# Updated to use the remapped ground truth
+REMAṔPED_GROUND_TRUTH_PATH = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif"
+
+# Alberta class names (0-12)
+ALBERTA_CLASS_NAMES = [
+    'Temperate needleleaf forest',
+    'Sub-polar taiga forest',
+    'Temperate broadleaf forest',
+    'Mixed forest',
+    'Temperate shrubland',
+    'Temperate grassland',
+    'Polar grassland-lichen',
+    'Wetland',
+    'Cropland',
+    'Barren lands',
+    'Urban',
+    'Water',
+    'Snow/ice'
+]
 
 def create_model(model_name, sensor_name, config):
     """Create model based on name and sensor configuration"""
@@ -635,22 +669,6 @@ def calculate_classification_metrics(predicted_labels, ground_truth_labels, num_
     cm = confusion_matrix(gt_valid, pred_valid, labels=range(num_classes))
     
     # Calculate per-class metrics
-    class_names = [
-        'Temperate needleleaf forest',
-        'Sub-polar taiga forest',
-        'Temperate broadleaf forest',
-        'Mixed forest',
-        'Temperate shrubland',
-        'Temperate grassland',
-        'Polar grassland-lichen',
-        'Wetland',
-        'Cropland',
-        'Barren lands',
-        'Urban',
-        'Water',
-        'Snow/ice'
-    ]
-    
     per_class_metrics = {}
     for i in range(num_classes):
         # Get TP, FP, FN from confusion matrix
@@ -666,7 +684,7 @@ def calculate_classification_metrics(predicted_labels, ground_truth_labels, num_
         iou = iou_per_class[i] if i < len(iou_per_class) else 0
         
         per_class_metrics[i] = {
-            'name': class_names[i],
+            'name': ALBERTA_CLASS_NAMES[i],
             'tp': int(tp),
             'fp': int(fp),
             'fn': int(fn),
@@ -737,48 +755,42 @@ def calculate_classification_metrics(predicted_labels, ground_truth_labels, num_
             i = idx // num_classes
             j = idx % num_classes
             if i != j and cm[i, j] > 0 and count < max_confusions:
-                print(f"    {class_names[i]} → {class_names[j]}: {cm[i, j]:,} pixels")
+                print(f"    {ALBERTA_CLASS_NAMES[i]} → {ALBERTA_CLASS_NAMES[j]}: {cm[i, j]:,} pixels")
                 count += 1
     
     return metrics
 
 
-def evaluate_classified_scene(predicted_scene_path, ground_truth_path, output_dir, experiment_name):
+def evaluate_with_remapped_ground_truth(predicted_scene_path, ground_truth_path, output_dir, experiment_name):
     """
-    Evaluate classification results against ground truth label map.
+    Evaluate classification results against remapped ground truth (Alberta classes 0-12).
     
     Args:
-        predicted_scene_path: Path to predicted classification result
-        ground_truth_path: Path to ground truth label map
+        predicted_scene_path: Path to predicted classification result (Canada classes 1-19)
+        ground_truth_path: Path to remapped ground truth (Alberta classes 0-12, -99 for invalid)
         output_dir: Directory to save evaluation results
         experiment_name: Name of the experiment for reporting
     """
     print(f"\nEvaluating classification results...")
     print(f"Predicted scene: {predicted_scene_path}")
-    print(f"Ground truth: {ground_truth_path}")
+    print(f"Remapped ground truth: {ground_truth_path}")
     
-    # Load predicted scene (after clipping and conversion to Canada classes)
+    # Load predicted scene (Canada classes 1-19, 255 for NoData)
     with rasterio.open(predicted_scene_path) as src_pred:
-        predicted_data = src_pred.read(1)  # Read first band
-        pred_transform = src_pred.transform
+        predicted_data = src_pred.read(1)
         pred_crs = src_pred.crs
     
-    # Load ground truth
+    # Load remapped ground truth (Alberta classes 0-12, -99 for invalid)
     with rasterio.open(ground_truth_path) as src_gt:
-        ground_truth_data = src_gt.read(1)  # Read first band
-        gt_transform = src_gt.transform
+        ground_truth_data = src_gt.read(1)
         gt_crs = src_gt.crs
     
     print(f"Predicted shape: {predicted_data.shape}")
     print(f"Ground truth shape: {ground_truth_data.shape}")
     
-    # Check if CRS and transforms match
+    # Check if CRS match
     if str(pred_crs) != str(gt_crs):
         print(f"WARNING: CRS mismatch! Predicted: {pred_crs}, Ground truth: {gt_crs}")
-        print("Attempting to reproject ground truth to match predicted...")
-        
-        # You would need to implement reprojection here if needed
-        # For now, we'll assume they match or are close enough
     
     # Resample ground truth to match predicted if needed
     if predicted_data.shape != ground_truth_data.shape:
@@ -788,8 +800,8 @@ def evaluate_classified_scene(predicted_scene_path, ground_truth_path, output_di
         scale_w = predicted_data.shape[1] / ground_truth_data.shape[1]
         ground_truth_data = zoom(ground_truth_data, (scale_h, scale_w), order=0)  # Nearest neighbor
     
-    # Convert predicted Canada classes back to Alberta classes for comparison
-    # Reverse mapping: Canada class -> Alberta class
+    # Convert predicted Canada classes to Alberta classes
+    # Mapping: Canada class -> Alberta class
     CANADA_TO_ALBERTA_MAPPING = {
         1: 0,   # Temperate or sub-polar needleleaf forest -> Temperate needleleaf forest
         2: 1,   # Sub-polar taiga needleleaf forest -> Sub-polar taiga forest
@@ -806,7 +818,7 @@ def evaluate_classified_scene(predicted_scene_path, ground_truth_path, output_di
         19: 12  # Snow and ice -> Snow/ice
     }
     
-    # Convert predicted data (Canada classes) back to Alberta classes (0-12)
+    # Convert predicted data (Canada classes) to Alberta classes (0-12)
     predicted_alberta = np.full_like(predicted_data, -99, dtype=np.int16)
     
     for canada_class, alberta_class in CANADA_TO_ALBERTA_MAPPING.items():
@@ -814,26 +826,90 @@ def evaluate_classified_scene(predicted_scene_path, ground_truth_path, output_di
         if mask.any():
             predicted_alberta[mask] = alberta_class
     
-    # Also handle the case where predicted is already 255 (NoData/Outside Alberta)
+    # Handle NoData/Outside Alberta (255) -> -99
     outside_mask = predicted_data == 255
     if outside_mask.any():
         predicted_alberta[outside_mask] = -99
     
-    # Now both arrays should have classes 0-12 and -99 for invalid
+    # Ground truth is already in Alberta classes (0-12) with -99 for invalid
+    ground_truth_alberta = ground_truth_data
+    
+    # Align boundaries - only evaluate where both have valid data
+    valid_mask = (predicted_alberta != -99) & (ground_truth_alberta != -99)
+    
+    predicted_valid = predicted_alberta[valid_mask]
+    ground_truth_valid = ground_truth_alberta[valid_mask]
+    
+    print(f"Valid pixels for evaluation: {len(predicted_valid):,} of {predicted_alberta.size:,} ({len(predicted_valid)/predicted_alberta.size*100:.1f}%)")
+    
     # Calculate metrics
-    metrics = calculate_classification_metrics(predicted_alberta, ground_truth_data, num_classes=13)
+    metrics = calculate_classification_metrics(predicted_alberta, ground_truth_alberta, num_classes=13)
     
     if metrics is None:
         print("No valid metrics could be calculated.")
         return None
     
-    # Save metrics to JSON file
+    # Save metrics summary to TXT file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    metrics_filename = f"classification_metrics_{experiment_name}_{timestamp}.json"
-    metrics_path = output_dir / metrics_filename
+    summary_path = output_dir / f"classification_metrics_{experiment_name}_{timestamp}.txt"
+    
+    with open(summary_path, 'w') as f:
+        f.write(f"CLASSIFICATION METRICS SUMMARY\n")
+        f.write(f"===============================\n")
+        f.write(f"Evaluation Date: {datetime.now()}\n")
+        f.write(f"Experiment: {experiment_name}\n")
+        f.write(f"Predicted Scene: {predicted_scene_path}\n")
+        f.write(f"Ground Truth: {ground_truth_path}\n\n")
+        
+        f.write(f"OVERALL METRICS:\n")
+        f.write(f"  Accuracy:          {metrics['overall']['accuracy']:.4f}\n")
+        f.write(f"  F1 Score (macro):   {metrics['overall']['f1_macro']:.4f}\n")
+        f.write(f"  F1 Score (weighted): {metrics['overall']['f1_weighted']:.4f}\n")
+        f.write(f"  Precision (macro):  {metrics['overall']['precision_macro']:.4f}\n")
+        f.write(f"  Recall (macro):     {metrics['overall']['recall_macro']:.4f}\n")
+        f.write(f"  Cohen's Kappa:      {metrics['overall']['kappa']:.4f}\n")
+        f.write(f"  Mean IoU:           {metrics['overall']['mean_iou']:.4f}\n")
+        f.write(f"  Total Valid Pixels: {metrics['overall']['total_pixels']:,}\n\n")
+        
+        f.write(f"PER-CLASS METRICS:\n")
+        f.write(f"{'Class':<30} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Support':<10}\n")
+        f.write("-" * 90 + "\n")
+        
+        for i in range(13):
+            class_metric = metrics['per_class'][i]
+            f.write(f"{class_metric['name'][:30]:<30} "
+                   f"{class_metric['precision']:.4f}     "
+                   f"{class_metric['recall']:.4f}     "
+                   f"{class_metric['f1']:.4f}     "
+                   f"{class_metric['iou']:.4f}     "
+                   f"{class_metric['support']:,}\n")
+        
+        f.write(f"\nCONFUSION MATRIX (rows=truth, columns=predicted):\n")
+        cm = np.array(metrics['confusion_matrix'])
+        f.write("     " + " ".join([f"{i:6d}" for i in range(13)]) + "\n")
+        for i in range(13):
+            row_str = f"{i:3d}: " + " ".join([f"{cm[i,j]:6d}" for j in range(13)])
+            f.write(row_str + "\n")
+        
+        f.write(f"\nMOST CONFUSED CLASS PAIRS:\n")
+        # Find top 5 most confused pairs
+        cm_flat = cm.flatten()
+        indices = np.argsort(cm_flat)[::-1]
+        count = 0
+        for idx in indices:
+            i = idx // 13
+            j = idx % 13
+            if i != j and cm[i, j] > 0 and count < 5:
+                f.write(f"  {ALBERTA_CLASS_NAMES[i]} → {ALBERTA_CLASS_NAMES[j]}: {cm[i, j]:,} pixels\n")
+                count += 1
+    
+    print(f"\n✓ Classification metrics saved to: {summary_path}")
+    
+    # Also save JSON for programmatic use
+    json_path = output_dir / f"classification_metrics_{experiment_name}_{timestamp}.json"
     
     # Add metadata to metrics
-    metrics_metadata = {
+    metrics['metadata'] = {
         'evaluation_date': str(datetime.now()),
         'predicted_scene': str(predicted_scene_path),
         'ground_truth_scene': str(ground_truth_path),
@@ -844,48 +920,12 @@ def evaluate_classified_scene(predicted_scene_path, ground_truth_path, output_di
         'ground_truth_crs': str(gt_crs)
     }
     
-    metrics['metadata'] = metrics_metadata
-    
-    with open(metrics_path, 'w') as f:
+    with open(json_path, 'w') as f:
         json.dump(metrics, f, indent=2)
     
-    print(f"\n✓ Metrics saved to: {metrics_path}")
+    print(f"✓ JSON metrics saved to: {json_path}")
     
-    # Also save a text summary
-    summary_path = output_dir / f"classification_summary_{experiment_name}_{timestamp}.txt"
-    with open(summary_path, 'w') as f:
-        f.write(f"Classification Metrics Summary\n")
-        f.write(f"=============================\n")
-        f.write(f"Evaluation Date: {datetime.now()}\n")
-        f.write(f"Experiment: {experiment_name}\n")
-        f.write(f"Predicted Scene: {predicted_scene_path}\n")
-        f.write(f"Ground Truth: {ground_truth_path}\n\n")
-        
-        f.write(f"Overall Metrics:\n")
-        f.write(f"  Accuracy:        {metrics['overall']['accuracy']:.4f}\n")
-        f.write(f"  F1 Score (macro): {metrics['overall']['f1_macro']:.4f}\n")
-        f.write(f"  Precision (macro): {metrics['overall']['precision_macro']:.4f}\n")
-        f.write(f"  Recall (macro):    {metrics['overall']['recall_macro']:.4f}\n")
-        f.write(f"  Cohen's Kappa:    {metrics['overall']['kappa']:.4f}\n")
-        f.write(f"  Mean IoU:         {metrics['overall']['mean_iou']:.4f}\n")
-        f.write(f"  Total Valid Pixels: {metrics['overall']['total_pixels']:,}\n\n")
-        
-        f.write(f"Per-Class Metrics:\n")
-        f.write(f"{'Class':<30} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'IoU':<10} {'Support':<10}\n")
-        f.write("-" * 80 + "\n")
-        
-        for i in range(13):
-            class_metric = metrics['per_class'][i]
-            f.write(f"{class_metric['name'][:30]:<30} "
-                   f"{class_metric['precision']:.4f}    "
-                   f"{class_metric['recall']:.4f}    "
-                   f"{class_metric['f1']:.4f}    "
-                   f"{class_metric['iou']:.4f}    "
-                   f"{class_metric['support']:,}\n")
-    
-    print(f"✓ Text summary saved to: {summary_path}")
-    
-    return metrics_path
+    return summary_path
 
 
 def classify_full_scene(
@@ -899,8 +939,7 @@ def classify_full_scene(
     overlap=0,
     save_probabilities=False,
     target_crs='EPSG:3979',
-    evaluate=False,
-    ground_truth_path=None
+    evaluate=False
 ):
     """
     Classify a full scene and save in the experiment directory.
@@ -916,8 +955,7 @@ def classify_full_scene(
         overlap (int): Overlap between patches (for smoother edges)
         save_probabilities (bool): Save class probabilities instead of labels
         target_crs (str): Target coordinate reference system (default: EPSG:3979)
-        evaluate (bool): Whether to evaluate against ground truth
-        ground_truth_path (str): Path to ground truth label map for evaluation
+        evaluate (bool): Whether to evaluate against remapped ground truth
     
     Returns:
         output_path: Path to saved classified scene
@@ -1018,7 +1056,7 @@ def classify_full_scene(
     print(f"  Target CRS: {target_crs}")
     print(f"  Output directory: {output_dir}")
     if evaluate:
-        print(f"  Evaluation: ENABLED (will compare with ground truth)")
+        print(f"  Evaluation: ENABLED (will use remapped ground truth)")
     
     # 5. Process patches
     patches = []
@@ -1144,23 +1182,12 @@ def classify_full_scene(
     
     # 8. Evaluate classification if requested
     if evaluate and not save_probabilities:
-        if ground_truth_path is None:
-            # Try to get ground truth path from sensor name
-            sensor_name = model_config['sensor_name']
-            if sensor_name in LABEL_MAP_PATHS:
-                ground_truth_path = LABEL_MAP_PATHS[sensor_name]
-                print(f"\nUsing default ground truth for {sensor_name}: {ground_truth_path}")
-            else:
-                print(f"\nWARNING: No ground truth path provided for sensor {sensor_name}")
-                print("Skipping evaluation. Use --ground_truth_path to specify.")
-                evaluate = False
-        
-        if evaluate and Path(ground_truth_path).exists():
+        if Path(REMAṔPED_GROUND_TRUTH_PATH).exists():
             try:
                 experiment_name = Path(experiment_dir).name
-                metrics_path = evaluate_classified_scene(
+                metrics_path = evaluate_with_remapped_ground_truth(
                     predicted_scene_path=output_path,
-                    ground_truth_path=ground_truth_path,
+                    ground_truth_path=REMAṔPED_GROUND_TRUTH_PATH,
                     output_dir=output_dir,
                     experiment_name=experiment_name
                 )
@@ -1170,8 +1197,8 @@ def classify_full_scene(
                 print(f"\nERROR during evaluation: {str(e)}")
                 import traceback
                 traceback.print_exc()
-        elif evaluate:
-            print(f"\nERROR: Ground truth file not found at: {ground_truth_path}")
+        else:
+            print(f"\nERROR: Remapped ground truth file not found at: {REMAṔPED_GROUND_TRUTH_PATH}")
             print("Skipping evaluation.")
     
     # 9. Save classification metadata with CRS details
@@ -1194,7 +1221,7 @@ def classify_full_scene(
                      transform.d, transform.e, transform.f],
         'dimensions': {'height': H, 'width': W, 'channels': C},
         'evaluation_performed': evaluate,
-        'evaluation_ground_truth': ground_truth_path if evaluate else None,
+        'evaluation_ground_truth': REMAPPED_GROUND_TRUTH_PATH if evaluate else None,
         'processing_date': str(datetime.now()),
         'processing_time_seconds': pbar.format_dict['elapsed']
     }
@@ -1340,11 +1367,9 @@ def main():
     parser.add_argument('--device', type=str, default=None,
                        help='Device: "cuda", "cpu", or auto-detect')
     
-    # Evaluation parameters
+    # Evaluation parameter (simplified - uses the remapped ground truth)
     parser.add_argument('--evaluate', action='store_true', default=False,
-                       help='Evaluate classification against ground truth')
-    parser.add_argument('--ground_truth_path', type=str, default=None,
-                       help='Path to ground truth label map for evaluation')
+                       help='Evaluate classification against remapped ground truth')
     
     # Batch processing
     parser.add_argument('--process_all_experiments', action='store_true',
@@ -1362,6 +1387,7 @@ def main():
     scene_path = get_scene_path_for_sensor(args.sensor_name)
     print(f"Sensor: {args.sensor_name}")
     print(f"Scene path: {scene_path}")
+    print(f"Remapped ground truth: {REMAṔPED_GROUND_TRUTH_PATH}")
     
     # Find experiment directories
     base_experiments_dir = Path("/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/experiments")
@@ -1435,8 +1461,7 @@ def main():
                 overlap=args.overlap,
                 save_probabilities=args.save_probabilities,
                 target_crs='EPSG:3979',
-                evaluate=args.evaluate,
-                ground_truth_path=args.ground_truth_path
+                evaluate=args.evaluate
             )
             
             print(f"\n✅ Scene classification completed for {experiment_dir.name}!")
