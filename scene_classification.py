@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 # Import your models
 from models import (
-    MIMUNet, FocalUNet, SepViTUNet, SwinUNet, 
+    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
     CATUNet, TwinsUNet, BasicUNet, HRNetWrapper
 )
 
@@ -65,7 +65,17 @@ def create_model(model_name, sensor_name, config):
     elif model_name == 'SepViTUNet':
         return SepViTUNet(**model_config)
     elif model_name == 'SwinUNet':
-        return SwinUNet(**model_config)
+        swin_config = {
+            'img_size': 224,
+            'in_channels': input_channels,
+            'num_classes': num_classes,
+            'embed_dim': 32,
+            'depths': [2, 2, 6, 2],
+            'heads': [1, 2, 4, 8],
+            'patch_size': 4,
+            'window_size': 7
+        }
+        return SwinUNetWrapper(**swin_config)
     elif model_name == 'CATUNet':
         return CATUNet(**model_config)
     elif model_name == 'TwinsUNet':

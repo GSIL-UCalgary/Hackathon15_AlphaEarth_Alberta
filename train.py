@@ -296,7 +296,7 @@ def create_model(model_name, sensor_name, config):
             'in_channels': input_channels,
             'num_classes': num_classes,
             'embed_dim': 32,
-            'depths': [1, 1, 2, 1],
+            'depths': [2, 2, 6, 2],
             'heads': [1, 2, 4, 8],
             'patch_size': 4,
             'window_size': 7
