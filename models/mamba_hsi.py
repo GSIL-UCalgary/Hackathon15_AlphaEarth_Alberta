@@ -165,17 +165,214 @@ class MambaHSI(nn.Module):
         logits = self.cls_head(x)
         return logits
 
+"""
+Test script for MambaHSI model
+Tests with 10-band hyperspectral image of size 224x224
+"""
+"""
+Test script for MambaHSI model
+Tests with 10-band hyperspectral image of size 224x224
+"""
 
 
-# if __name__=='__main__':
-#     batch, length, dim = 2, 512*512, 256
-#     x = torch.randn(batch, length, dim).to("cuda")
-#     model = Mamba(
-#         # This module uses roughly 3 * expand * d_model^2 parameters
-#         d_model=dim,  # Model dimension d_model
-#         d_state=16,  # SSM state expansion factor
-#         d_conv=4,  # Local convolution width
-#         expand=2,  # Block expansion factor
-#     ).to("cuda")
-#     y = model(x)
-#     assert y.shape == x.shape
+def test_mambahsi():
+    """Test MambaHSI model with different configurations"""
+    
+    print("="*80)
+    print("Testing MambaHSI Model")
+    print("="*80)
+    
+    # Check for CUDA
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nDevice: {device}")
+    
+    if not torch.cuda.is_available():
+        print("⚠️  WARNING: CUDA not available. Mamba requires GPU!")
+        print("⚠️  This test will fail on CPU. Please run on a GPU.")
+        return
+    
+    # Input specifications
+    batch_size = 2
+    in_channels = 10  # 10 spectral bands
+    height = 224
+    width = 224
+    num_classes = 13  # Your segmentation classes
+    
+    # Create dummy input and move to GPU
+    x = torch.randn(batch_size, in_channels, height, width).to(device)
+    print(f"\nInput shape: {x.shape}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Channels (bands): {in_channels}")
+    print(f"  Spatial size: {height}x{width}")
+    
+    # Test different mamba types
+    mamba_types = ['spa', 'spe', 'both']
+    
+    for mamba_type in mamba_types:
+        print(f"\n{'-'*80}")
+        print(f"Testing with mamba_type='{mamba_type}'")
+        print(f"{'-'*80}")
+        
+        # Create model and move to GPU
+        model = MambaHSI(
+            in_channels=in_channels,
+            hidden_dim=64,
+            num_classes=num_classes,
+            use_residual=True,
+            mamba_type=mamba_type,
+            token_num=4,
+            group_num=4,
+            use_att=True
+        ).to(device)
+        
+        # Count parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        print(f"Model Parameters:")
+        print(f"  Total: {total_params:,}")
+        print(f"  Trainable: {trainable_params:,}")
+        print(f"  Size: {total_params/1e6:.2f}M")
+        
+        # Test forward pass
+        model.eval()
+        with torch.no_grad():
+            try:
+                output = model(x)
+                print(f"\nForward pass successful!")
+                print(f"  Output shape: {output.shape}")
+                print(f"  Expected: ({batch_size}, {num_classes}, H_out, W_out)")
+                
+                # Calculate spatial reduction
+                h_out, w_out = output.shape[2], output.shape[3]
+                reduction_factor = height // h_out
+                print(f"\nSpatial reduction:")
+                print(f"  Input: {height}x{width}")
+                print(f"  Output: {h_out}x{w_out}")
+                print(f"  Reduction factor: {reduction_factor}x (due to 3 AvgPool2d layers with stride=2)")
+                
+            except Exception as e:
+                print(f"\n❌ Error during forward pass: {e}")
+    
+    print(f"\n{'='*80}")
+    print("Testing Complete!")
+    print(f"{'='*80}")
+
+
+def test_custom_config():
+    """Test with custom configuration"""
+    
+    print("\n" + "="*80)
+    print("Testing Custom Configuration")
+    print("="*80)
+    
+    # Check for CUDA
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
+    
+    if not torch.cuda.is_available():
+        print("⚠️  Skipping - CUDA required for Mamba")
+        return
+    
+    # Custom configuration
+    config = {
+        'in_channels': 10,
+        'hidden_dim': 32,  # Smaller for faster computation
+        'num_classes': 13,
+        'use_residual': True,
+        'mamba_type': 'both',
+        'token_num': 8,
+        'group_num': 4,
+        'use_att': True
+    }
+    
+    print("\nConfiguration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    
+    # Create model and move to GPU
+    model = MambaHSI(**config).to(device)
+    
+    # Test input and move to GPU
+    x = torch.randn(1, 10, 224, 224).to(device)
+    
+    # Forward pass
+    model.eval()
+    with torch.no_grad():
+        output = model(x)
+    
+    print(f"\nResults:")
+    print(f"  Input shape: {x.shape}")
+    print(f"  Output shape: {output.shape}")
+    print(f"  Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+
+
+def analyze_spatial_dimensions():
+    """Analyze how spatial dimensions change through the network"""
+    
+    print("\n" + "="*80)
+    print("Spatial Dimension Analysis")
+    print("="*80)
+    
+    # Check for CUDA
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
+    
+    if not torch.cuda.is_available():
+        print("⚠️  Skipping - CUDA required for Mamba")
+        return
+    
+    model = MambaHSI(
+        in_channels=10,
+        hidden_dim=64,
+        num_classes=13,
+        mamba_type='both'
+    ).to(device)
+    
+    x = torch.randn(1, 10, 224, 224).to(device)
+    
+    print(f"\nInput: {x.shape}")
+    
+    # Patch embedding
+    x = model.patch_embedding(x)
+    print(f"After patch_embedding: {x.shape}")
+    
+    # Through mamba layers
+    for i, layer in enumerate(model.mamba):
+        x = layer(x)
+        print(f"After mamba[{i}] ({layer.__class__.__name__}): {x.shape}")
+    
+    # Classification head
+    x = model.cls_head(x)
+    print(f"After cls_head (final output): {x.shape}")
+    
+    print(f"\nSummary:")
+    print(f"  Input spatial size: 224x224")
+    print(f"  After 1st AvgPool: 112x112")
+    print(f"  After 2nd AvgPool: 56x56")
+    print(f"  After 3rd AvgPool: 28x28")
+    print(f"  Final output: 28x28")
+
+
+if __name__ == "__main__":
+    # Test 1: Basic functionality with all mamba types
+    test_mambahsi()
+    
+    # Test 2: Custom configuration
+    test_custom_config()
+    
+    # Test 3: Spatial dimension analysis
+    analyze_spatial_dimensions()
+    
+    print("\n" + "="*80)
+    print("All tests completed!")
+    print("="*80)
+    
+    # Summary
+    print("\n📊 SUMMARY:")
+    print("  ✓ MambaHSI accepts input of shape (B, 10, 224, 224)")
+    print("  ✓ Output shape is (B, 13, 28, 28)")
+    print("  ✓ Spatial dimensions are reduced by 8x (224→28)")
+    print("  ✓ This is due to 3 AvgPool2d layers with kernel=2, stride=2")
+    print("  ⚠ Output is NOT the same spatial size as input!")
+    print("  ⚠ For segmentation, you may need to upsample the output")

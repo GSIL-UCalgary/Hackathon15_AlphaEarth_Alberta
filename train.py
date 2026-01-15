@@ -24,7 +24,7 @@ import rasterio
 # Import your models
 from models import (
     MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper
 )
 
 # Set random seeds for reproducibility
@@ -286,7 +286,22 @@ def create_model(model_name, sensor_name, config):
             'num_classes': num_classes
         }
         return HRNetWrapper(hrnet_config)
-
+    # --------------------------------------------------
+    # MambaHSISeg (new addition)
+    # --------------------------------------------------
+    elif model_name == 'MambaHSISeg':
+        mamba_config = {
+            'in_channels': input_channels,
+            'num_classes': num_classes,
+            'base_dim': 32,           # c1 dimension
+            'mamba_type': 'both',     # 'spa', 'spe', or 'both'
+            'token_num': 4,           # for SpeMamba
+            'use_residual': True,
+            'group_num': 4,
+            'use_att': True,          # attention fusion for BothMamba
+            'use_stem': True          # whether to use initial downsampling
+        }
+        return MambaHSISegWrapper(mamba_config)
     # --------------------------------------------------
     # SwinUNet
     # --------------------------------------------------

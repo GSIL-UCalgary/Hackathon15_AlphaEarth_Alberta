@@ -8,5 +8,6 @@ from .twins_unet import TwinsUNet
 from .unet import BasicUNet
 from .seg_hrnet import HRNetWrapper
 from .resnet_unet import ResNetUNetWrapper
+from .seg_mamba_hsi import MambaHSISegWrapper
 __all__ = ['MIMUNet', 'FocalUNet', 'SepViTUNet', 'SwinUNetWrapper', 'CATUNet', 
-           'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper']
+           'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper']
