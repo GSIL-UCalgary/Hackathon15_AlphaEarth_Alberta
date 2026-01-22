@@ -4,7 +4,7 @@
 # Model and dataset
 model_name: "MambaHSISeg" # SwinUNet, BasicUNet, HRNet , MambaHSISeg
 sensor_name: "alphaearth" # landsat8 OR alphaearth
-label_type: "filtered" # or "unfiltered"
+label_type: "unfiltered" # or "unfiltered"
 
 # Paths
 data_root: "./train_val_test_patches/patches"
