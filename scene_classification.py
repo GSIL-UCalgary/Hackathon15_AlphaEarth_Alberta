@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 # Import your models
 from models import (
     MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper, ImageHyperConnectionTransformerWrapper
 )
 
 # ==================== PREDEFINED SCENE PATHS ====================
@@ -64,6 +64,21 @@ def create_model(model_name, sensor_name, config):
         return FocalUNet(**model_config)
     elif model_name == 'SepViTUNet':
         return SepViTUNet(**model_config)
+    elif model_name == 'mHC_cluster':
+        return ImageHyperConnectionTransformerWrapper(
+            in_channels=input_channels,       # 64 for alphaearth
+            num_classes=num_classes,          # 13 classes
+            image_size=128,                   # Input image size
+            dim=64,                           # ✅ Increased from 12 to 64 (must be divisible by 4)
+            n_layers=4,                       # ✅ Reduced layers for memory efficiency
+            n_heads=4,                        # Number of attention heads (64/4 = 16 per head)
+            rate=4,                           # ✅ Reduced from 4 to 2 for memory
+            patch_size=1,                     # No downsampling for segmentation
+            dropout=0.1,
+            drop_path=0.1,
+            mask_ratio=0.0,                   # ✅ Disable masking for segmentation
+            dynamic=True                      # Dynamic hyper-connections
+        )
     elif model_name == 'SwinUNet':
         swin_config = {
             'img_size': 224,

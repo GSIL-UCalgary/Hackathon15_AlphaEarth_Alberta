@@ -139,17 +139,17 @@ train_val_test_patches/
 
 ```
 # Basic training with Landsat-8
-python train.py --config config/landsat_config.yaml --label_type filtered
+python train.py --config config/alphaearth_config.yaml
 
 # Train with Sentinel-2
-python train.py --config config/sentinel_config.yaml --label_type filtered
+python train.py --config config/sentinel_config.yaml 
 
 # Train with AlphaEarth
-python train.py --config config/alphaearth_config.yaml --label_type filtered
+python train.py --config config/alphaearth_config.yaml 
 ```
 
 ### 5. Scene classifications
 
 First, run the `python create_alberta_ground_truth.py` code to get landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif
 
-Then, run `python scene_classification.py --sensor_name landsat8 --evaluate` to get the scene classificaiton and classification metrics.
+Then, run `python scene_classification.py --sensor_name alphaearth --model_name HRNet` to get the scene classificaiton and classification metrics.
