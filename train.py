@@ -24,7 +24,7 @@ import rasterio
 # Import your models
 from models import (
     MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model
 )
 
 # Set random seeds for reproducibility
@@ -303,6 +303,34 @@ def create_model(model_name, sensor_name, config):
             drop_path=0.1,
             mask_ratio=0.0,                   # ✅ Disable masking for segmentation
             dynamic=True                      # Dynamic hyper-connections
+        )
+    # --------------------------------------------------
+    # SSRN
+    # --------------------------------------------------
+    elif model_name == 'ssrn'
+        return SSRNForSegmentation(
+            in_channels=input_channels,
+            num_classes=num_classes,
+            msize=18,
+            inter_size=49
+        ):
+    # --------------------------------------------------
+    # ConvNeXt
+    # --------------------------------------------------
+    elif model_name == 'convnext':
+        convnext_config = {
+            'in_chans': input_channels,
+            'depths': [3, 3],
+            'dims': [96, 192],
+            'num_classes': num_classes,
+            'patch_size': 1
+        }
+        return ConvNeXtForSegmentation(**convnext_config)
+    # --------------------------------------------------
+    # OBIA Mamba
+    # --------------------------------------------------
+    elif model_name == 'Global_superxiel_model':
+        return Global_superxiel_model(num_classes=num_classes, num_superpixel=500, dim=64, d_conv=6, in_channels=input_channels,
         )
     # --------------------------------------------------
     # MambaHSISeg (new addition)
