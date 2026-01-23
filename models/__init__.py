@@ -9,6 +9,6 @@ from .unet import BasicUNet
 from .seg_hrnet import HRNetWrapper
 from .resnet_unet import ResNetUNetWrapper
 from .seg_mamba_hsi import MambaHSISegWrapper
-from .mHC_cluster import ImageHyperConnectionTransformer
+from .mHC_cluster import ImageHyperConnectionTransformerWrapper
 __all__ = ['MIMUNet', 'FocalUNet', 'SepViTUNet', 'SwinUNetWrapper', 'CATUNet', 
-           'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper', 'ImageHyperConnectionTransformer']
+           'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper', 'ImageHyperConnectionTransformerWrapper']

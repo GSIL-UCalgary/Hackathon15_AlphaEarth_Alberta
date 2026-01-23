@@ -2,18 +2,18 @@
 # python train.py --config config/alphaearth_config.yaml
 # python scene_classification.py --sensor_name alphaearth --model_name HRNet 
 # Model and dataset
-model_name: "MambaHSISeg" # SwinUNet, BasicUNet, HRNet , MambaHSISeg
-sensor_name: "alphaearth" # landsat8 OR alphaearth
-label_type: "unfiltered" # or "unfiltered"
+model_name: "mHC_cluster" # SwinUNet, BasicUNet, HRNet , MambaHSISeg, mHC_cluster
+sensor_name: "alphaearth" # landsat8 OR alphaearth OR sentinel2
+label_type: "filtered" # "unfiltered" OR "filtered"
 
 # Paths
-data_root: "./train_val_test_patches/patches"
-dataset_config: "./train_val_test_patches/multisensor_dataset_config.json"
+data_root: "./train_val_test_patches_128x128/patches"
+dataset_config: "./train_val_test_patches_128x128/multisensor_dataset_config.json"
 output_dir: "./experiments"
 
 # Training hyperparameters
 epochs: 100
-batch_size: 16
+batch_size: 4
 learning_rate: 0.0001
 weight_decay: 0.00001
 

@@ -11,4 +11,5 @@ train_val_test_patches/LC_filtered.tif
 train_val_test_patches/LC_remapped.tif
 wandb_api_key.txt
 experiments/
+train_val_test_patches_128x128/
 

@@ -741,7 +741,6 @@ class FeedForward(nn.Module):
 class HyperConnectionBlock(nn.Module):
     def __init__(self, dim: int, n_heads: int, rate: int, layer_id: int, dropout: float = 0.1):
         super().__init__()
-        # Replace existing LayerNorm with RMSNorm, implementing Pre-Norm structure
         self.attn_norm = RMSNorm(dim)
         self.ffn_norm = RMSNorm(dim)
         self.attention = nn.MultiheadAttention(dim, n_heads, dropout=dropout, batch_first=True)
@@ -752,15 +751,18 @@ class HyperConnectionBlock(nn.Module):
         self.ffn_dropout = nn.Dropout(dropout)
 
     def forward(self, h: torch.Tensor, mask=None) -> torch.Tensor:
-        mix_h_attn, beta_attn = self.attn_hc.width_connection(h)
+        # FIX: Unpack all 4 return values (even though we only need first 2)
+        mix_h_attn, beta_attn, H_res_attn, H_pre_attn = self.attn_hc.width_connection(h)
         h_in_attn = self.attn_norm(mix_h_attn[..., 0, :])
         attn_output, _ = self.attention(h_in_attn, h_in_attn, h_in_attn, attn_mask=mask)
         h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(attn_output), beta_attn)
-        mix_h_ffn, beta_ffn = self.ffn_hc.width_connection(h)
+        
+        # FIX: Unpack all 4 return values (even though we only need first 2)
+        mix_h_ffn, beta_ffn, H_res_ffn, H_pre_ffn = self.ffn_hc.width_connection(h)
         h_in_ffn = self.ffn_norm(mix_h_ffn[..., 0, :])
         ffn_output = self.ffn(h_in_ffn)
         h = self.ffn_hc.depth_connection(mix_h_ffn, self.ffn_dropout(ffn_output), beta_ffn)
-        return h
+        return h  # Return only the tensor, not a tuple
 
 """Text model block: TextHyperConnectionBlock, using nn.MultiheadAttention"""
 class TextHyperConnectionBlock(nn.Module):
@@ -875,39 +877,64 @@ class ImageHyperConnectionBlock(nn.Module):
     def forward(self, h: torch.Tensor, mask=None) -> torch.Tensor:
         mix_h_attn, beta_attn, alpha, H_pre = self.attn_hc.width_connection(h)
         h_in_attn = self.attn_norm(mix_h_attn[..., 0, :])
-        #attn_output, _ = self.attention(h_in_attn, h_in_attn, h_in_attn, attn_mask=mask)
-        #attn_output = self.spatial_branch(h_in_attn)
+        
         B, HW, C = h_in_attn.shape
-        H, W = 145, 145
+        # Note: H and W are not actually used in this method, 
+        # but keeping for potential future use
+        H = W = int(HW**0.5)  # Assuming square patches
+        
+        # Spectral branch processing
         x_flat = h_in_attn.view(B * HW, 4, C//4)
+        
+        # Clustering for adaptive spatial processing
         clustering = alpha.reshape(B, HW, -1)
         selected_indices = []
-        cluster_num = alpha.shape[2]*alpha.shape[3]
+        cluster_num = alpha.shape[2] * alpha.shape[3]
         k = int(0.1 * HW)
+        
         for cluster_idx in range(cluster_num):
-            cluster_scores = clustering[:, :, cluster_idx]
-            _, topk_indices = torch.topk(cluster_scores, k=k, dim=-1)
+            cluster_scores = clustering[:, :, cluster_idx]  # Shape: [B, HW]
+            _, topk_indices = torch.topk(cluster_scores, k=k, dim=-1)  # Shape: [B, k]
             selected_indices.append(topk_indices)
+        
+        # Process spectral dimension
         x_flat = self.spectral_branch(x_flat)
         attn_output = x_flat.view(B, HW, C)
-        output = torch.zeros(B, HW, C, device=attn_output.device)
+        
+        # Initialize output tensor
+        output = torch.zeros(B, HW, C, device=attn_output.device, dtype=attn_output.dtype)
+        
+        # Process each cluster with spatial Mamba
         x_processed = []
-        x_processed.extend(
-            self.spatial_adpative_clustering_branch[i](attn_output[:, selected_indices[i][0], :])
-            for i in range(cluster_num)
-        )
         for i in range(cluster_num):
-            output.scatter_add_(1,selected_indices[i][0].unsqueeze(dim=0).unsqueeze(-1).expand(-1, -1, C),x_processed[i])
-        # out = output.view(B*HW, 4, C//4)
-        # spe_output = self.spectral_branch(out)
-        # spe_output = spe_output.view(B, HW, -1)
+            # selected_indices[i] has shape [B, k]
+            # We need to gather features for each batch sample
+            cluster_features = torch.gather(
+                attn_output, 
+                dim=1, 
+                index=selected_indices[i].unsqueeze(-1).expand(-1, -1, C)
+            )  # Shape: [B, k, C]
+            
+            # Process through spatial Mamba
+            x_proc = self.spatial_adpative_clustering_branch[i](cluster_features)  # Shape: [B, k, C]
+            x_processed.append(x_proc)
+        
+        # Scatter processed features back to output
+        for i in range(cluster_num):
+            # ✅ FIX: Properly expand indices for all batch samples
+            indices = selected_indices[i].unsqueeze(-1).expand(-1, -1, C)  # Shape: [B, k, C]
+            
+            # ✅ FIX: Use scatter_add_ correctly with batch dimension
+            output.scatter_add_(1, indices, x_processed[i])
+        
         h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(output), beta_attn)
+        
+        # FFN branch
         mix_h_ffn, beta_ffn, alpha, H_pre = self.ffn_hc.width_connection(h)
         h_in_ffn = self.ffn_norm(mix_h_ffn[..., 0, :])
         ffn_output = self.ffn(h_in_ffn)
-        # endm_get = self.get_endmember()
-        # recon_linear = torch.einsum('brhw,rl->blhw', [abundance, endm_get])
         h = self.ffn_hc.depth_connection(mix_h_ffn, self.ffn_dropout(ffn_output), beta_ffn)
+        
         return h, alpha, beta_ffn, H_pre
 
     def get_endmember(self):
@@ -1004,11 +1031,8 @@ class ImageHyperConnectionTransformer(nn.Module):
         return x_masked, mask, ids_restore
     def forward(self, x: torch.Tensor, epoch=None, return_features=False):
         hsi = x
-        print(f"input image size: {x.shape}")
         B = x.shape[0]
-        print(f'self.patch_embed(x) shape: {self.patch_embed(x).shape}')
         x = self.patch_embed(x).flatten(2).transpose(1, 2) 
-        print(f"patch embedding output shape: {x.shape}")   # B 96, 8, 8. --> B, 96, 64
         x = x + self.pos_embed.to(device=x.device, dtype=x.dtype)
         x = self.emb_dropout(x)
         B, L, C = x.shape
@@ -1020,8 +1044,11 @@ class ImageHyperConnectionTransformer(nn.Module):
         H = x.unsqueeze(2).repeat(1, 1, self.expansion_rate, 1)
         spatial_regularized_loss = 0.
         for layer, dp in zip(self.layers, self.drop_paths):
-            H, alpha, beta_ffn, H_pre = dp(layer(H))
-            y = H.mean(dim=2).permute(0, 2, 1).contiguous()  # (B, C, L_keep or L)
+            # H, alpha, beta_ffn, H_pre = dp(layer(H))
+            # y = H.mean(dim=2).permute(0, 2, 1).contiguous()  # (B, C, L_keep or L)
+            H_out, alpha, beta_ffn, H_pre = layer(H)
+            H = dp(H_out)  # Only apply drop_path to H 
+            y = H.mean(dim=2).permute(0, 2, 1).contiguous()
             if self.mask_ratio == 0 or not self.training or ids_restore is None:
                 Y.append(y.view(B, C, self.width, self.height))
             else:
@@ -1054,7 +1081,6 @@ class ImageHyperConnectionTransformer(nn.Module):
         h_final = self.final_norm(h_final)
         B, C = h_final.shape[0], h_final.shape[-1]
         h_final = h_final.view(B, self.height, self.width, C).permute(0, 3, 1, 2).contiguous()
-        print(f"final feature map size: {h_final.shape}")
         logits = self.cls_head(h_final)
         Y.append(logits)
         if return_features: return Y
@@ -1275,7 +1301,41 @@ def scatter_density_xy(x, y, ax, s=4):
     sc = ax.scatter(x, y, c=z, s=s)
     return sc
 
-
+## Wrapper to define the model
+class ImageHyperConnectionTransformerWrapper(nn.Module):
+    def __init__(self, 
+                 in_channels=64,
+                 num_classes=10,
+                 image_size=224,
+                 dim=64,
+                 n_layers=6,
+                 n_heads=8,
+                 rate=4,
+                 patch_size=1,
+                 dropout=0.1,
+                 drop_path=0.0,
+                 mask_ratio=0.1,
+                 dynamic=True):
+        super().__init__()
+        self.model = ImageHyperConnectionTransformer(
+            image_size=image_size,
+            patch_size=patch_size,
+            in_channels=in_channels,
+            num_classes=num_classes,
+            dim=dim,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            rate=rate,
+            dropout=dropout,
+            drop_path=drop_path,
+            mask_ratio=mask_ratio,
+            dynamic=dynamic
+        )
+    
+    def forward(self, x):
+        return self.model(x)
+    
+    
 # ------------------------------------------------------------------------------------
 # 9. Test Cases
 # ------------------------------------------------------------------------------------
@@ -1306,5 +1366,3 @@ if __name__ == '__main__':
     loss = logits.sum(); loss.backward()
     print("Image model forward and backward propagation test passed.")
     print("-" * 60)
-
-
