@@ -13,6 +13,7 @@ from .mHC_cluster import ImageHyperConnectionTransformerWrapper
 from .ssrn import SSRNForSegmentation
 from .convnext import ConvNeXtForSegmentation
 from .fusion_GL import Global_superxiel_model
+from .ViT import ViTForSegmentation
 __all__ = ['MIMUNet', 'FocalUNet', 'SepViTUNet', 'SwinUNetWrapper', 'CATUNet', 
            'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper', 'ImageHyperConnectionTransformerWrapper', 
-           'ResNetUNetWrapper', 'SSRNForSegmentation', 'ConvNeXtForSegmentation', 'Global_superxiel_model']
+           'ResNetUNetWrapper', 'SSRNForSegmentation', 'ConvNeXtForSegmentation', 'Global_superxiel_model', 'ViTForSegmentation']

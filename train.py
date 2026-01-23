@@ -24,7 +24,7 @@ import rasterio
 # Import your models
 from models import (
     MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model, ViTForSegmentation
 )
 
 # Set random seeds for reproducibility
@@ -329,9 +329,22 @@ def create_model(model_name, sensor_name, config):
     # --------------------------------------------------
     # OBIA Mamba
     # --------------------------------------------------
-    elif model_name == 'Global_superxiel_model':
+    elif model_name == 'OBIA_Mamba':
         return Global_superxiel_model(num_classes=num_classes, num_superpixel=500, dim=64, d_conv=6, in_channels=input_channels,
         )
+    elif model_name == 'ViT':
+        vit_config = {
+            'img_size': 128,
+            'patch_size': 16,
+            'in_chans': input_channels,
+            'embed_dim': 768,
+            'depth': 12,
+            'num_heads': 12,
+            'mlp_ratio': 4.0,
+            'dropout': 0.1,
+            'num_classes': num_classes
+        }
+        return ViTForSegmentation(**vit_config)
     # --------------------------------------------------
     # MambaHSISeg (new addition)
     # --------------------------------------------------
