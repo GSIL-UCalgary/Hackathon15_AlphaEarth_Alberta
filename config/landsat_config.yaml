@@ -3,7 +3,7 @@
 # python scene_classification.py --sensor_name landsat8 --model_name HRNet
 
 # Model and dataset
-model_name: "mHC_cluster" #  SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT
+model_name: "mHC_cluster" #  SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT, Tseg
 sensor_name: "landsat8" # sentinel2 OR alphaearth
 label_type: "filtered"  # or "unfiltered"
 

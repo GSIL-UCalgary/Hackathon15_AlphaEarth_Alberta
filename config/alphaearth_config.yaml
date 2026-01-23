@@ -2,7 +2,7 @@
 # python train.py --config config/alphaearth_config.yaml
 # python scene_classification.py --sensor_name alphaearth --model_name HRNet 
 # Model and dataset
-model_name: "mHC_cluster" # SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT
+model_name: "mHC_cluster" # SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT, Tseg
 sensor_name: "alphaearth" # landsat8 OR alphaearth OR sentinel2
 label_type: "filtered" # "unfiltered" OR "filtered"
 

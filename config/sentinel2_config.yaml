@@ -2,7 +2,7 @@
 # python train.py --config config/sentinel2_config.yaml
 # python scene_classification.py --sensor_name sentinel2 --model_name HRNet
 # Model and dataset
-model_name: "MambaHSISeg"  # SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT
+model_name: "MambaHSISeg"  # SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT, Tseg  
 sensor_name: "sentinel2" # landsat8 OR alphaearth
 label_type: "filtered" # or "unfiltered"
 
