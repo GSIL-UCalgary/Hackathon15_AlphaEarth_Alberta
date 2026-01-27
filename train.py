@@ -23,10 +23,28 @@ import platform
 import rasterio
 # Import your models
 from models import (
-    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model, ViTForSegmentation
+    MIMUNet,
+    FocalUNet,
+    SepViTUNet,
+    SwinUNetWrapper, 
+    CATUNet, 
+    TwinsUNet, 
+    BasicUNet, 
+    HRNetWrapper,
+    MambaHSISegWrapper,
+    SSRNForSegmentation,
+    ConvNeXtForSegmentation, 
+    Global_superxiel_model,
+    VisionTransformerForSegmentation,
+    ImageHyperConnectionTransformer,
+    ImageHyperConnectionTransformer_spec_spa
 )
+# Enable memory optimization
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
+# Optional: Reduce TensorFlow memory usage if you have it installed
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Set random seeds for reproducibility
 def set_seed(seed=42):
     random.seed(seed)
@@ -290,30 +308,52 @@ def create_model(model_name, sensor_name, config):
     # mHC_cluster
     # --------------------------------------------------
     elif model_name == 'mHC_cluster':
-        return ImageHyperConnectionTransformerWrapper(
-            in_channels=input_channels,       # 64 for alphaearth
-            num_classes=num_classes,          # 13 classes
-            image_size=128,                   # Input image size
-            dim=64,                           # ✅ Increased from 12 to 64 (must be divisible by 4)
-            n_layers=4,                       # ✅ Reduced layers for memory efficiency
-            n_heads=4,                        # Number of attention heads (64/4 = 16 per head)
-            rate=4,                           # ✅ Reduced from 4 to 2 for memory
-            patch_size=1,                     # No downsampling for segmentation
-            dropout=0.1,
-            drop_path=0.1,
-            mask_ratio=0.0,                   # ✅ Disable masking for segmentation
-            dynamic=True                      # Dynamic hyper-connections
-        )
+        return ImageHyperConnectionTransformer(
+        image_size=224,
+        patch_size=1,
+        in_channels=input_channels,
+        num_classes=num_classes,
+        dim=32,
+        n_layers=2,
+        n_heads=2,
+        rate=4,
+        dropout=0.3,
+        drop_path=0.0,
+        mask_ratio=0.0,
+        dynamic=True
+    )
+
+    # --------------------------------------------------
+    # mHC_spec_spa_mamba
+    # --------------------------------------------------
+    elif model_name == 'mHC_spec_spa_mamba':
+        return ImageHyperConnectionTransformer_spec_spa(
+        image_size=224,
+        patch_size=2,
+        in_channels=input_channels,
+        num_classes=num_classes,
+        dim=32,
+        n_layers=2,
+        n_heads=2,
+        rate=4,
+        dropout=0.1,
+        drop_path=0.0,
+        mask_ratio=0.0,
+        dynamic=True
+    )
     # --------------------------------------------------
     # SSRN
     # --------------------------------------------------
-    elif model_name == 'ssrn'
+    elif model_name == 'ssrn':
         return SSRNForSegmentation(
             in_channels=input_channels,
             num_classes=num_classes,
             msize=18,
-            inter_size=49
-        ):
+            inter_size=64,
+            downsample=2,
+            apply_downsampling = True
+
+        )
     # --------------------------------------------------
     # ConvNeXt
     # --------------------------------------------------
@@ -321,7 +361,7 @@ def create_model(model_name, sensor_name, config):
         convnext_config = {
             'in_chans': input_channels,
             'depths': [3, 3],
-            'dims': [96, 192],
+            'dims': [128, 128],
             'num_classes': num_classes,
             'patch_size': 1
         }
@@ -330,11 +370,18 @@ def create_model(model_name, sensor_name, config):
     # OBIA Mamba
     # --------------------------------------------------
     elif model_name == 'OBIA_Mamba':
-        return Global_superxiel_model(num_classes=num_classes, num_superpixel=500, dim=64, d_conv=6, in_channels=input_channels,
+        return Global_superxiel_model(num_classes=num_classes, 
+                                      num_superpixel=500, 
+                                      dim=64, 
+                                      d_conv=6, 
+                                      in_channels=input_channels,
         )
+    # --------------------------------------------------
+    # ViT
+    # --------------------------------------------------
     elif model_name == 'ViT':
         vit_config = {
-            'img_size': 128,
+            'img_size': 224,
             'patch_size': 16,
             'in_chans': input_channels,
             'embed_dim': 768,
@@ -344,9 +391,9 @@ def create_model(model_name, sensor_name, config):
             'dropout': 0.1,
             'num_classes': num_classes
         }
-        return ViTForSegmentation(**vit_config)
+        return VisionTransformerForSegmentation(**vit_config)
     # --------------------------------------------------
-    # MambaHSISeg (new addition)
+    # MambaHSISeg 
     # --------------------------------------------------
     elif model_name == 'MambaHSISeg':
         mamba_config = {
@@ -415,7 +462,14 @@ class Trainer:
     
     def __init__(self, config):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.split_image = config.get('split_image', False)
+        self.margin = 5
+        self.num_classes = config.get('num_classes', 13)
+
+        # Remove the scaler setup
+        self.scaler = None  # Explicitly set to None
+
+        self.device = torch.device('cuda:1' if torch.cuda.device_count() > 1 else 'cpu')
         print(f"Using device: {self.device}")
         
         # Get label type (default to 'filtered' if not specified)
@@ -426,6 +480,10 @@ class Trainer:
         self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{label_type}_{timestamp}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        self.margin = 5
+        self.num_classes = config.get('num_classes', 13)
+
+
         # Load dataset config BEFORE saving configuration
         with open(config['dataset_config'], 'r') as f:
             self.dataset_config = json.load(f)
@@ -747,54 +805,120 @@ class Trainer:
     def train_epoch(self, train_loader, epoch):
         """Train for one epoch"""
         self.model.train()
-        total_loss = 0
+        total_epoch_loss = 0
         self.metrics.reset()
-        
         pbar = tqdm(train_loader, desc=f"Train Epoch {epoch}")
+        
         for batch_idx, (images, labels) in enumerate(pbar):
             images = images.to(self.device)
-            labels = labels.to(self.device)
-            
-            # Forward pass with mixed precision
-            self.optimizer.zero_grad()
-            
-            if self.scaler:
-                with torch.amp.autocast('cuda'):  # Updated API
-                    outputs = self.model(images)
-                    loss = self.criterion(outputs, labels)
+            labels = labels.to(self.device)                       
+            if self.split_image:
+                # Calculate split boundaries
+                B, C, H, W = images.shape
+                margin = self.margin
+                h_mid = H // 2
+                w_mid = W // 2
+                # Split image into 4 overlapping parts
+                parts = [
+                    (images[:, :, :h_mid + margin, :w_mid + margin],
+                    labels[:, :h_mid + margin, :w_mid + margin]),
+                    
+                    (images[:, :, :h_mid + margin, w_mid - margin:],
+                    labels[:, :h_mid + margin, w_mid - margin:]),
+                    
+                    (images[:, :, h_mid - margin:, :w_mid + margin],
+                    labels[:, h_mid - margin:, :w_mid + margin]),
+                    
+                    (images[:, :, h_mid - margin:, w_mid - margin:],
+                    labels[:, h_mid - margin:, w_mid - margin:])
+                ]
+                #print(f"Split into {len(parts)} parts for training.")
+                #print(f"Part 1 image shape: {parts[0][0].shape}, Part 1 label shape: {parts[0][1].shape}")
                 
-                # Backward pass with scaler
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                # Gradient accumulation
+                self.optimizer.zero_grad()
+                total_batch_loss = 0
+                
+                for i, (img_part, lbl_part) in enumerate(parts):
+                    # Process one part at a time
+                    outputs = self.model(img_part)
+                    loss = self.criterion(outputs, lbl_part.long())
+                    
+                    # Scale loss for accumulation (divide by number of parts)
+                    scaled_loss = loss / len(parts)
+                    scaled_loss.backward()
+                    
+                    total_batch_loss += loss.item()
+                    
+                    # Clear intermediate activations
+                    del outputs, loss
+                    torch.cuda.empty_cache()
+                
+                # Single optimizer step after all parts
+                self.optimizer.step()
+                
+                # Calculate average loss for this batch
+                avg_loss = total_batch_loss / len(parts)
+                total_epoch_loss += avg_loss
+                
+                # For metrics, use the last part's predictions (same as your original)
+                with torch.no_grad():
+                    last_outputs = self.model(parts[-1][0])
+                    preds = last_outputs.argmax(dim=1)
+                    self.metrics.update(preds, parts[-1][1])
+                
+                pbar.set_postfix({'loss': avg_loss})
+                
             else:
+                # Original full-image training (unchanged)
+                self.optimizer.zero_grad()
                 outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                loss = self.criterion(outputs, labels.long())
+                #print(f"outputs shape: {outputs.shape}, labels shape: {labels.shape}, loss: {loss.item()}")
                 loss.backward()
                 self.optimizer.step()
+                
+                preds = outputs.argmax(dim=1)
+                avg_loss = loss.item()
+                total_epoch_loss += avg_loss
+                
+                # Update metrics
+                self.metrics.update(preds, labels)
+                
+                pbar.set_postfix({'loss': avg_loss})
             
-            # Update metrics
-            preds = outputs.argmax(dim=1)
-            self.metrics.update(preds, labels)
-            
-            # Update progress bar
-            total_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
-            
+            # ✅ EXACT SAME wandb logging as your original code
             # Log batch metrics to wandb
-            if self.config['use_wandb'] and batch_idx % 10 == 0:
-                step = epoch * len(train_loader) + batch_idx
-                wandb.log({
-                    'train/batch_loss': loss.item(),
-                    'train/learning_rate': self.optimizer.param_groups[0]['lr'],
-                    'step': step
-                })
+            # if self.config['use_wandb'] and batch_idx % 10 == 0:
+            #     step = epoch * len(train_loader) + batch_idx
+            #     wandb.log({
+            #         'train/batch_loss': avg_loss,
+            #         'train/learning_rate': self.optimizer.param_groups[0]['lr'],
+            #         'step': step
+            #     })
         
+            """ 
+            To have a constant step size for models with different batch sizes
+            """
+             # Log batch metrics to wandb
+            if self.config['use_wandb'] and batch_idx % 10 == 0:
+                step = (
+                    epoch * len(train_loader.dataset)
+                    + batch_idx * train_loader.batch_size
+                )
+
+                wandb.log(
+                    {
+                        'train/batch_loss': avg_loss,
+                        'train/learning_rate': self.optimizer.param_groups[0]['lr'],
+                    },
+                    step=step
+                )
         # Compute metrics
         metrics = self.metrics.compute()
-        metrics['loss'] = total_loss / len(train_loader)
+        metrics['loss'] = total_epoch_loss / len(train_loader)
         
-        # Log epoch metrics to wandb
+        # Log epoch metrics to wandb (also identical to your original)
         if self.config['use_wandb']:
             wandb.log({
                 'train/epoch_loss': metrics['loss'],
@@ -822,16 +946,95 @@ class Trainer:
             images = images.to(self.device)
             labels = labels.to(self.device)
             
-            # Forward pass
-            outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
+            # Calculate split boundaries
+            B, C, H, W = images.shape
+            margin = self.margin
+            h_mid = H // 2
+            w_mid = W // 2
             
-            # Update metrics
-            preds = outputs.argmax(dim=1)
-            self.metrics.update(preds, labels)
-            
-            total_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
+            if self.split_image:
+                # Split image into 4 overlapping parts EXACTLY like training
+                # Top-left
+                x_part1 = images[:, :, :h_mid + margin, :w_mid + margin]
+                y_part1 = labels[:, :h_mid + margin, :w_mid + margin]
+
+                # Top-right
+                x_part2 = images[:, :, :h_mid + margin, w_mid - margin:]
+                y_part2 = labels[:, :h_mid + margin, w_mid - margin:]
+
+                # Bottom-left
+                x_part3 = images[:, :, h_mid - margin:, :w_mid + margin]
+                y_part3 = labels[:, h_mid - margin:, :w_mid + margin]
+
+                # Bottom-right
+                x_part4 = images[:, :, h_mid - margin:, w_mid - margin:]
+                y_part4 = labels[:, h_mid - margin:, w_mid - margin:]
+
+                # Forward passes for all parts
+                y_pred_part1 = self.model(x_part1)
+                ls1 = self.criterion(y_pred_part1, y_part1.long())
+                
+                y_pred_part2 = self.model(x_part2)
+                ls2 = self.criterion(y_pred_part2, y_part2.long())
+                
+                y_pred_part3 = self.model(x_part3)
+                ls3 = self.criterion(y_pred_part3, y_part3.long())
+                
+                y_pred_part4 = self.model(x_part4)
+                ls4 = self.criterion(y_pred_part4, y_part4.long())
+                
+                # Calculate average loss
+                batch_loss = (ls1 + ls2 + ls3 + ls4) / 4
+                total_loss += batch_loss.item()
+                
+                # Need to reconstruct full prediction for accurate metrics
+                # Get number of classes from output shape
+                num_classes = y_pred_part1.shape[1]
+                
+                # Initialize full logits tensor
+                full_logits = torch.zeros(B, num_classes, H, W, device=self.device)
+                count_map = torch.zeros(B, 1, H, W, device=self.device)
+                
+                # Reconstruct full prediction from parts
+                # Top-left
+                full_logits[:, :, :h_mid + margin, :w_mid + margin] += y_pred_part1
+                count_map[:, :, :h_mid + margin, :w_mid + margin] += 1
+                
+                # Top-right
+                full_logits[:, :, :h_mid + margin, w_mid - margin:] += y_pred_part2
+                count_map[:, :, :h_mid + margin, w_mid - margin:] += 1
+                
+                # Bottom-left
+                full_logits[:, :, h_mid - margin:, :w_mid + margin] += y_pred_part3
+                count_map[:, :, h_mid - margin:, :w_mid + margin] += 1
+                
+                # Bottom-right
+                full_logits[:, :, h_mid - margin:, w_mid - margin:] += y_pred_part4
+                count_map[:, :, h_mid - margin:, w_mid - margin:] += 1
+                
+                # Average overlapping regions
+                full_logits = full_logits / count_map
+                
+                # Get final predictions
+                preds = full_logits.argmax(dim=1)
+                
+                # Update metrics with full reconstructed predictions
+                self.metrics.update(preds, labels)
+                
+                # Update progress bar
+                pbar.set_postfix({'loss': batch_loss.item()})
+                
+            else:
+                # Original full-image validation
+                outputs = self.model(images)
+                loss = self.criterion(outputs, labels)
+                
+                # Update metrics
+                preds = outputs.argmax(dim=1)
+                self.metrics.update(preds, labels)
+                
+                total_loss += loss.item()
+                pbar.set_postfix({'loss': loss.item()})
         
         # Compute metrics
         metrics = self.metrics.compute()
@@ -876,7 +1079,7 @@ class Trainer:
             print(f"\n{'='*60}")
             print(f"Epoch {epoch}/{self.config['epochs']}")
             print(f"{'='*60}")
-            
+
             # Train
             train_metrics = self.train_epoch(train_loader, epoch)
             print(f"Train - Loss: {train_metrics['loss']:.4f}, "

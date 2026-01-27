@@ -8,14 +8,14 @@ import pdb
 
 import numpy as np
 from functools import partial
-from HR_Mamba import *
+#from HR_Mamba import *
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.vision_transformer import PatchEmbed, Block
-from ResNet import resnet18, resnet34, resnet50
-from branch1 import DipResNet2Layers
-from feature_fusion import FeatureFusion
+#from ResNet import resnet18, resnet34, resnet50
+from .branch1 import DipResNet2Layers
+from .feature_fusion import FeatureFusion
 # --------------------------------------------------------
 # References:
 # MAE: https://github.com/facebookresearch/mae

@@ -3,7 +3,7 @@ import pdb
 import torch.nn as nn
 import torch.nn.functional as F
 import torch 
-from torchsummary import summary
+#from torchsummary import summary
 
 class DipResNet2Layers(nn.Module):
     def __init__(
@@ -96,14 +96,14 @@ if __name__ == "__main__":
         pad="reflection"
     )
 
-    # --- Print Model Summary (requires torchsummary) ---
-    try:
-        print("\nModel Summary:")
-        summary(model, input_size=(num_input_channels, *input_size), device="cpu")
-    except ImportError:
-        print("\nInstall torchsummary for detailed layer info: `pip install torchsummary`")
-        print("Model architecture:")
-        print(model)
+    # # --- Print Model Summary (requires torchsummary) ---
+    # try:
+    #     print("\nModel Summary:")
+    #     summary(model, input_size=(num_input_channels, *input_size), device="cpu")
+    # except ImportError:
+    #     print("\nInstall torchsummary for detailed layer info: `pip install torchsummary`")
+    #     print("Model architecture:")
+    #     print(model)
 
     # --- Test Forward Pass ---
     dummy_input = torch.randn(1, num_input_channels, *input_size)  # Batch of 1

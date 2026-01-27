@@ -86,29 +86,39 @@ class SPC32(nn.Module):
 
 
 class SSRNForSegmentation(nn.Module):
-    def __init__(self, in_channels=10, num_classes=13, msize=18, inter_size=49):
+    def __init__(self, in_channels=10, num_classes=13, msize=18, inter_size=49, 
+                 downsample=4, apply_downsampling=True):
         super(SSRNForSegmentation, self).__init__()
-
-        # Initial projection
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(in_channels, inter_size, 1, bias=False),
-            nn.LeakyReLU(),
-            nn.BatchNorm2d(inter_size),
-        )
+        self.num_classes = num_classes
+        self.downsample = downsample
+        self.apply_downsampling = apply_downsampling
         
-        # Spectral-spatial processing blocks
-        self.layer2 = SPC32(msize, outplane=inter_size, kernel_size=[inter_size,1,1], padding=[0,0,0])        
+        if apply_downsampling:
+            # With convolutional downsampling
+            self.stem = nn.Sequential(
+                # Conv with stride to reduce spatial size
+                nn.Conv2d(in_channels, inter_size, kernel_size=downsample, stride=downsample, padding=0),
+                nn.BatchNorm2d(inter_size),
+                nn.LeakyReLU(),
+            )
+            self.upsample = nn.Upsample(scale_factor=downsample, mode='bilinear', align_corners=True)
+        else:
+            # Without downsampling (original SSRN)
+            self.layer1 = nn.Sequential(
+                nn.Conv2d(in_channels, inter_size, 1, bias=False),
+                nn.LeakyReLU(),
+                nn.BatchNorm2d(inter_size),
+            )
+            self.upsample = nn.Identity()
+        
+        # Common layers
+        self.layer2 = SPC32(msize, outplane=inter_size, kernel_size=[inter_size,1,1], padding=[0,0,0])
         self.layer3 = SARes(inter_size, ratio=8)
-        
-        # Dimension reduction
         self.layer4 = nn.Conv2d(inter_size, msize, kernel_size=1)
         self.bn4 = nn.BatchNorm2d(msize)
-        
-        # Additional processing
         self.layer5 = SARes(msize, ratio=8)
         self.layer6 = SPC32(msize, outplane=msize, kernel_size=[msize,1,1], padding=[0,0,0])
 
-        # Segmentation head
         self.segmentation_head = nn.Sequential(
             nn.Conv2d(msize, msize, 3, padding=1),
             nn.BatchNorm2d(msize),
@@ -120,15 +130,116 @@ class SSRNForSegmentation(nn.Module):
         )
 
     def forward(self, x):
-        n, c, h, w = x.size()
-
-        x = self.layer1(x)
+        if self.apply_downsampling:
+            x = self.stem(x)
+        else:
+            x = self.layer1(x)
+        
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.bn4(F.leaky_relu(self.layer4(x)))
         x = self.layer5(x)
         x = self.layer6(x)
+        x = self.upsample(x)
+        return self.segmentation_head(x)
 
-        # Segmentation output
-        seg_map = self.segmentation_head(x)
-        return seg_map
+def main():
+    """Test function to print output sizes of each layer"""
+    print("=" * 60)
+    print("SSRNForSegmentation Model Test with Stem")
+    print("=" * 60)
+    
+    # Create device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Test different input sizes
+    test_cases = [
+        (2, 64, 224, 224),    # Batch=2, Channels=64, Height=224, Width=224
+    ]
+    
+    for i, (batch, channels, height, width) in enumerate(test_cases):
+        print(f"\n{'='*60}")
+        print(f"Test Case {i+1}: Input shape ({batch}, {channels}, {height}, {width})")
+        print(f"{'='*60}")
+        
+        # Create model with stem (4x downsampling)
+        model = SSRNForSegmentation(
+            in_channels=channels,
+            num_classes=13,
+            msize=18,
+            inter_size=49,
+            downsample=4
+        ).to(device)
+        
+        # Create dummy input
+        dummy_input = torch.randn(batch, channels, height, width).to(device)
+        print(f"Dummy input shape: {dummy_input.shape}")
+        print(f"Dummy input size: {dummy_input.element_size() * dummy_input.nelement() / 1024**2:.2f} MB")
+        
+        # Forward pass with gradient disabled
+        with torch.no_grad():
+            try:
+                output = model(dummy_input)
+                
+                # Print summary
+                print(f"\n✅ Test PASSED!")
+                print(f"   Input:  {dummy_input.shape}")
+                print(f"   Output: {output.shape}")
+                print(f"   Expected output: (batch, num_classes, height, width)")
+                print(f"   Actual output: ({batch}, {13}, {height}, {width})")
+                
+                # Check if output shape is correct
+                expected_shape = (batch, 13, height, width)
+                if output.shape == expected_shape:
+                    print(f"   ✅ Output shape matches expected: {expected_shape}")
+                else:
+                    print(f"   ❌ Output shape mismatch!")
+                    print(f"      Expected: {expected_shape}")
+                    print(f"      Got:      {output.shape}")
+                
+                # Memory analysis
+                print(f"\nMemory Analysis:")
+                print(f"   Input memory: {dummy_input.element_size() * dummy_input.nelement() / 1024**2:.2f} MB")
+                print(f"   Output memory: {output.element_size() * output.nelement() / 1024**2:.2f} MB")
+                
+                # Attention matrix size after downsampling
+                down_h = height // 4
+                down_w = width // 4
+                attention_matrix_size = (down_h * down_w) * (down_h * down_w) * 4 / 1024**2  # in MB
+                print(f"   Attention matrix size (after {down_h}×{down_w}): {attention_matrix_size:.1f} MB")
+                
+                # Compare with original (without stem)
+                original_attention_size = (height * width) * (height * width) * 4 / 1024**3  # in GB
+                print(f"   Original attention would be: {original_attention_size:.2f} GB")
+                print(f"   Memory reduction: {original_attention_size * 1024 / attention_matrix_size:.0f}x")
+                
+            except torch.cuda.OutOfMemoryError:
+                print(f"\n❌ CUDA Out of Memory!")
+                print(f"   Input shape: {dummy_input.shape}")
+                down_h = height // 4
+                down_w = width // 4
+                attention_matrix_size = (down_h * down_w) * (down_h * down_w) * 4 / 1024**2
+                print(f"   Attention matrix would be: {attention_matrix_size:.1f} MB")
+                print(f"   Try reducing batch size")
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        print(f"\n{'='*60}")
+        
+        # Clear GPU memory
+        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
+if __name__ == '__main__':
+    # Set random seed for reproducibility
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    
+    # Run main test
+    main()

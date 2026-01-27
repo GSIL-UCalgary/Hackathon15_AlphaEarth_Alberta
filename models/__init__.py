@@ -9,11 +9,13 @@ from .unet import BasicUNet
 from .seg_hrnet import HRNetWrapper
 from .resnet_unet import ResNetUNetWrapper
 from .seg_mamba_hsi import MambaHSISegWrapper
-from .mHC_cluster import ImageHyperConnectionTransformerWrapper
 from .ssrn import SSRNForSegmentation
 from .convnext import ConvNeXtForSegmentation
 from .fusion_GL import Global_superxiel_model
-from .ViT import ViTForSegmentation
-__all__ = ['MIMUNet', 'FocalUNet', 'SepViTUNet', 'SwinUNetWrapper', 'CATUNet', 
-           'TwinsUNet', 'BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper', 'ImageHyperConnectionTransformerWrapper', 
-           'ResNetUNetWrapper', 'SSRNForSegmentation', 'ConvNeXtForSegmentation', 'Global_superxiel_model', 'ViTForSegmentation']
+from .ViT import VisionTransformerForSegmentation
+from .mHC_cluster import ImageHyperConnectionTransformer
+from .mHC_spec_spa_mamba import ImageHyperConnectionTransformer_spec_spa
+__all__ = [ 'SwinUNetWrapper','BasicUNet', 'get_seg_model', 'HRNetWrapper', 'MambaHSISegWrapper',  
+           'ResNetUNetWrapper', 'SSRNForSegmentation', 'ImageHyperConnectionTransformer',
+           'ImageHyperConnectionTransformer_spec_spa',
+           'ConvNeXtForSegmentation', 'Global_superxiel_model', 'VisionTransformerForSegmentation']

@@ -1,34 +1,35 @@
 # Multi-sensor Semantic Segmentation Configuration
-# python train.py --config config/landsat_config.yaml
-# python scene_classification.py --sensor_name landsat8 --model_name HRNet
-
+# python train.py --config config/alphaearth_config.yaml
+# python scene_classification.py --sensor_name landsat8 --model_name mHC_spec_spa_mamba 
 # Model and dataset
-model_name: "mHC_cluster" #  SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT
-sensor_name: "landsat8" # sentinel2 OR alphaearth
-label_type: "filtered"  # or "unfiltered"
-
-# Paths - Use absolute paths or set them relative to project root
+model_name: "mHC_spec_spa_mamba" # SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT, mHC_spec_spa_mamba
+sensor_name: "landsat8" # landsat8 OR alphaearth OR sentinel2
+label_type: "filtered" # "unfiltered" OR "filtered"
+split_image: False  # True OR False
+num_classes: 13
+image_patch_size: 224  # 128 OR 224
+# Paths
 data_root: "./train_val_test_patches/patches"
 dataset_config: "./train_val_test_patches/multisensor_dataset_config.json"
 output_dir: "./experiments"
 
 # Training hyperparameters
 epochs: 100
-batch_size: 16
-learning_rate: 0.0001
+batch_size: 4
+learning_rate: 0.001
 weight_decay: 0.00001
 
 # Loss and optimizer
 loss_fn: "cross_entropy"
-optimizer: "adamw"
-scheduler: "cosine"
+optimizer: "adamw" # adam OR adamw OR sgd
+scheduler: "cosine" # reduce_on_plateau OR cosine OR step
 
 # Model settings
 ignore_index: -99
-class_weights: null  # Optional: path to JSON file or list [1.0, 2.0, ...]
+class_weights: null
 
 # Training settings
-use_amp: true
+use_amp: false
 num_workers: 4
 save_every: 10
 

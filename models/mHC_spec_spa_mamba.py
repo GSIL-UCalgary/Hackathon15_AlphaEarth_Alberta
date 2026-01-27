@@ -5,15 +5,16 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 import warnings
-from math import sqrt
-import pdb
 from mamba_ssm import Mamba
-import matplotlib.pyplot as plt
 import numpy as np
-
+import tifffile
+from PIL import Image
+from pathlib import Path
+from torchsummary import summary
+from torchinfo import summary as torchinfo_summary
+import pprint
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     """
     Initializes a tensor with values drawn from a truncated normal distribution.
@@ -662,25 +663,15 @@ class HyperConnection(nn.Module):
         # Split alpha: [B, L, rate, rate+1] -> H_pre_raw [B, L, rate, 1], H_res_raw [B, L, rate, rate]
         H_pre_raw = alpha[..., :1]      # [B, L, rate, 1]
         H_res_raw = alpha[..., 1:]      # [B, L, rate, rate]
-        x_diag = torch.diagonal(H_res_raw, dim1=2, dim2=3)
-        #reshape_H_res = x_diag.reshape(B, 145, 145, N).permute(0, 3, 1, 2)
-        #abundance = self.abundance_constrain(reshape_H_res)
         # --- Key Fix 3: Non-negative constraint for H_pre (paper Equation 8) ---
         H_pre = torch.sigmoid(H_pre_raw)
         
         # --- Key Fix 4: Sinkhorn projection of H_res onto bistochastic manifold ---
-        # Note: sinkhorn_knopp typically includes exp internally, so no need to exp beforehand
-        # However, paper Equation (9) does write M(0) = exp(H~_res)
-        # Our sinkhorn_knopp implementation handles this exp
         H_res = sinkhorn_knopp(H_res_raw, num_iter=20, epsilon=1e-12)
-        # print(f"H_res {H_res}")
-        # print(f"shape H_res {H_res.shape}")
 
         # --- Key Fix 5: Non-negative constraint for H_post (beta) (paper Equation 8) ---
         # Paper Equation (8) explicitly states H_post = 2 * sigmoid(~H_post)
         beta_constrained = 2.0 * torch.sigmoid(beta)
-        # reshape_beta = beta.reshape(B, 145, 145, N).permute(0, 3, 1, 2)
-        # abundance = self.abundance_constrain(reshape_beta)
         # --- mHC Core Constraints End ---
 
         # Apply H_pre and H_res
@@ -728,7 +719,7 @@ class HyperConnection(nn.Module):
         return h_prime + h_o_weighted
 
 # ------------------------------------------------------------------------------------
-# 2- Text Model Building Blocks
+# 5. Image Model Building Blocks
 # ------------------------------------------------------------------------------------
 
 class FeedForward(nn.Module):
@@ -737,107 +728,6 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(nn.Linear(dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, dim))
     def forward(self, x):
         return self.net(x)
-
-class HyperConnectionBlock(nn.Module):
-    def __init__(self, dim: int, n_heads: int, rate: int, layer_id: int, dropout: float = 0.1):
-        super().__init__()
-        # Replace existing LayerNorm with RMSNorm, implementing Pre-Norm structure
-        self.attn_norm = RMSNorm(dim)
-        self.ffn_norm = RMSNorm(dim)
-        self.attention = nn.MultiheadAttention(dim, n_heads, dropout=dropout, batch_first=True)
-        self.ffn = FeedForward(dim, dim * 4)
-        self.attn_hc = HyperConnection(dim, rate, layer_id, dynamic=True)
-        self.ffn_hc = HyperConnection(dim, rate, layer_id, dynamic=True)
-        self.attn_dropout = nn.Dropout(dropout)
-        self.ffn_dropout = nn.Dropout(dropout)
-
-    def forward(self, h: torch.Tensor, mask=None) -> torch.Tensor:
-        mix_h_attn, beta_attn = self.attn_hc.width_connection(h)
-        h_in_attn = self.attn_norm(mix_h_attn[..., 0, :])
-        attn_output, _ = self.attention(h_in_attn, h_in_attn, h_in_attn, attn_mask=mask)
-        h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(attn_output), beta_attn)
-        mix_h_ffn, beta_ffn = self.ffn_hc.width_connection(h)
-        h_in_ffn = self.ffn_norm(mix_h_ffn[..., 0, :])
-        ffn_output = self.ffn(h_in_ffn)
-        h = self.ffn_hc.depth_connection(mix_h_ffn, self.ffn_dropout(ffn_output), beta_ffn)
-        return h
-
-"""Text model block: TextHyperConnectionBlock, using nn.MultiheadAttention"""
-class TextHyperConnectionBlock(nn.Module):
-    def __init__(self, dim: int, n_heads: int, rate: int, layer_id: int, dropout: float = 0.1):
-        super().__init__()
-        self.attn_norm = RMSNorm(dim)
-        self.ffn_norm = RMSNorm(dim)
-        self.attention = nn.MultiheadAttention(dim, n_heads, dropout=dropout, batch_first=True)
-        self.ffn = FeedForward(dim, dim * 4)
-        self.attn_hc = HyperConnection(dim, rate, layer_id, dynamic=True)
-        self.ffn_hc = HyperConnection(dim, rate, layer_id, dynamic=True)
-        self.attn_dropout = nn.Dropout(dropout)
-        self.ffn_dropout = nn.Dropout(dropout)
-
-    def forward(self, h: torch.Tensor, mask=None) -> torch.Tensor:
-        mix_h_attn, beta_attn = self.attn_hc.width_connection(h)
-        h_in_attn = self.attn_norm(mix_h_attn[..., 0, :])
-        attn_output, _ = self.attention(h_in_attn, h_in_attn, h_in_attn, attn_mask=mask)
-        h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(attn_output), beta_attn)
-        mix_h_ffn, beta_ffn = self.ffn_hc.width_connection(h)
-        h_in_ffn = self.ffn_norm(mix_h_ffn[..., 0, :])
-        ffn_output = self.ffn(h_in_ffn)
-        h = self.ffn_hc.depth_connection(mix_h_ffn, self.ffn_dropout(ffn_output), beta_ffn)
-        return h
-
-# ------------------------------------------------------------------------------------
-# 3. Text Model
-# ------------------------------------------------------------------------------------
-
-class HyperConnectionTransformer(nn.Module):
-    def __init__(self, vocab_size: int, max_len: int, dim: int, 
-        n_layers: int, n_heads: int, rate: int, dropout: float = 0.1, drop_path: float = 0.0,
-        return_hidden: bool = False):
-        super().__init__()
-        if dim % 2 != 0:
-            raise ValueError(f"dim must be even for SinusoidalPositionEncoding, got {dim}")
-        self.expansion_rate = rate
-        self.token_embedding = nn.Embedding(vocab_size, dim)
-        self.pos_encoding = SinusoidalPositionEncoding(d_model=dim, max_len=max_len)
-        self.emb_dropout = nn.Dropout(dropout)
-        self.max_len = max_len
-        self.return_hidden = return_hidden
-
-        self.layers = nn.ModuleList([
-            TextHyperConnectionBlock(
-                dim, n_heads, rate, layer_id, dropout
-            ) for layer_id in range(n_layers)
-        ])
-        if n_layers > 0 and drop_path > 0.0:
-            dpr = torch.linspace(0, drop_path, n_layers).tolist()
-        else:
-            dpr = [0.0 for _ in range(n_layers)]
-        self.drop_paths = nn.ModuleList([
-            DropPath(dpr[layer_id]) if dpr[layer_id] > 0.0 else nn.Identity()
-            for layer_id in range(n_layers)
-        ])
-        self.final_norm = RMSNorm(dim)  # Replace nn.LayerNorm(dim)
-        self.lm_head = nn.Linear(dim, vocab_size) if not return_hidden else nn.Identity()
-        self.apply(init_transformer_weights)
-
-    def forward(self, idx: torch.Tensor, mask=None):
-        B, L = idx.shape; device = idx.device
-        tok_emb = self.token_embedding(idx)
-        positions = torch.arange(0, L, device=device, dtype=torch.float32).unsqueeze(0)
-        pos_emb = self.pos_encoding(positions).to(dtype=tok_emb.dtype)
-        h = self.emb_dropout(tok_emb + pos_emb)
-        H = h.unsqueeze(2).repeat(1, 1, self.expansion_rate, 1)
-        for layer, dp in zip(self.layers, self.drop_paths):
-            H = dp(layer(H, mask=mask))
-        h_final = H.mean(dim=2)
-        h_final = self.final_norm(h_final)
-        logits = self.lm_head(h_final)
-        return logits
-
-# ------------------------------------------------------------------------------------
-# 5. Image Model Building Blocks
-# ------------------------------------------------------------------------------------
 
 class ImageHyperConnectionBlock(nn.Module):
     def __init__(self, dim: int, n_heads: int, rate: int, layer_id: int, dropout: float = 0.1, dynamic: bool = False):
@@ -858,14 +748,6 @@ class ImageHyperConnectionBlock(nn.Module):
             d_conv=4,
             expand=2,
         )
-        self.spatial_adpative_clustering_branch = nn.ModuleList([
-            Mamba(
-                d_model=dim,
-                d_state=16,
-                d_conv=4,
-                expand=2,
-            ) for _ in range(16)
-        ])
         self.ffn = FeedForward(dim, dim * 4)
         self.attn_hc = HyperConnection(dim, rate, layer_id, dynamic=self.dynamic)
         self.ffn_hc = HyperConnection(dim, rate, layer_id, dynamic=self.dynamic)
@@ -875,65 +757,23 @@ class ImageHyperConnectionBlock(nn.Module):
     def forward(self, h: torch.Tensor, mask=None) -> torch.Tensor:
         mix_h_attn, beta_attn, alpha, H_pre = self.attn_hc.width_connection(h)
         h_in_attn = self.attn_norm(mix_h_attn[..., 0, :])
-        #attn_output, _ = self.attention(h_in_attn, h_in_attn, h_in_attn, attn_mask=mask)
-        #attn_output = self.spatial_branch(h_in_attn)
+        
+        # Use Mamba for spatial processing
+        attn_output = self.spatial_branch(h_in_attn)
+        
+        # Spectral processing - reshape to use spectral Mamba
         B, HW, C = h_in_attn.shape
-        #H, W = 145, 145
-
         x_flat = h_in_attn.view(B * HW, 4, C//4)
-        clustering = alpha.reshape(B, HW, -1)
-        selected_indices = []
-        cluster_num = alpha.shape[2]*alpha.shape[3]
-        k = int(0.1 * HW)
-        for cluster_idx in range(cluster_num):
-            cluster_scores = clustering[:, :, cluster_idx]
-            _, topk_indices = torch.topk(cluster_scores, k=k, dim=-1)
-            selected_indices.append(topk_indices)
-        x_flat = self.spectral_branch(x_flat) 
-        attn_output = x_flat.view(B, HW, C)
-        output = torch.zeros(B, HW, C, device=attn_output.device)
-        # x_processed = []
-        # # 
-        # x_processed.extend(
-        #     self.spatial_adpative_clustering_branch[i](attn_output[:, selected_indices[i][0], :])
-        #     for i in range(cluster_num)
-        # )
-        # print(f"x_processed length: {len(x_processed)}")
-        # for i in range(cluster_num):
-        #     output.scatter_add_(1,selected_indices[i][0].unsqueeze(dim=0).unsqueeze(-1).expand(-1, -1, C),x_processed[i])
-        # # out = output.view(B*HW, 4, C//4)
-
-        # Above commented out lines are replaced with the following for loop to avoid potential issues with scatter_add_
-        # ====== FIXED: Process each batch separately ======
-        """
-        For each cluster i:
-            Select top-k positions (based on alpha scores)
-            Extract features at those positions
-            Transform with Mamba_i
-            Add transformed features back to original positions
-        """
-        for i in range(cluster_num):
-            for b in range(B):
-                indices = selected_indices[i][b]  # [k] indices for this batch
-                
-                # Get features for this batch and these indices
-                features = attn_output[b:b+1, indices, :]  # [1, k, C]
-                
-                # Process through spatial adaptive clustering branch
-                processed = self.spatial_adpative_clustering_branch[i](features)  # [1, k, C]
-                
-                # Scatter back to this batch
-                output[b:b+1, indices, :] += processed  # Add to output
-
-
-        # spe_output = self.spectral_branch(out)
-        # spe_output = spe_output.view(B, HW, -1)
-        h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(output), beta_attn)
+        spectral_output = self.spectral_branch(x_flat)
+        spectral_output = spectral_output.view(B, HW, C)
+        
+        # Combine spatial and spectral outputs
+        combined_output = attn_output + spectral_output
+        
+        h = self.attn_hc.depth_connection(mix_h_attn, self.attn_dropout(combined_output), beta_attn)
         mix_h_ffn, beta_ffn, alpha, H_pre = self.ffn_hc.width_connection(h)
         h_in_ffn = self.ffn_norm(mix_h_ffn[..., 0, :])
         ffn_output = self.ffn(h_in_ffn)
-        # endm_get = self.get_endmember()
-        # recon_linear = torch.einsum('brhw,rl->blhw', [abundance, endm_get])
         h = self.ffn_hc.depth_connection(mix_h_ffn, self.ffn_dropout(ffn_output), beta_ffn)
         return h, alpha, beta_ffn, H_pre
 
@@ -947,25 +787,34 @@ class ImageHyperConnectionBlock(nn.Module):
 # ------------------------------------------------------------------------------------
 # 6. Image Model 
 # ------------------------------------------------------------------------------------
-class ImageHyperConnectionTransformer(nn.Module):
+class ImageHyperConnectionTransformer_spec_spa(nn.Module):
     def __init__(self, image_size: int, patch_size: int, in_channels: int, num_classes: int, 
-                 dim: int, n_layers: int, n_heads: int, rate: int, dropout: float = 0.1, drop_path: float = 0,
-                 pool_size=4, mask_ratio=0.1, dynamic=True):
+                 dim: int, n_layers: int, n_heads: int, rate: int, dropout: float = 0.1, 
+                 drop_path: float = 0, pool_size=4, mask_ratio=0.0, dynamic=True):
         super().__init__()
+        self.mask_ratio = mask_ratio
         if dim % 2 != 0:
             raise ValueError(f"dim must be even for SinusoidalPositionEncoding, got {dim}")
-        if type(image_size)==int: image_size = (image_size, image_size)
-        if type(patch_size)==int: patch_size = (patch_size, patch_size)
-        if type(pool_size)==int: pool_size = (pool_size, pool_size)
-        self.expansion_rate = rate
+        if type(image_size)==int: 
+            image_size = (image_size, image_size)
+        if type(patch_size)==int: 
+            patch_size = (patch_size, patch_size)
+        if type(pool_size)==int: 
+            pool_size = (pool_size, pool_size)
+        
+        # Store original image size for upsampling reference
+        self.original_image_size = image_size
         self.patch_size = patch_size
-        self.width = image_size[1] // patch_size[1]
-        self.height = image_size[0] // patch_size[0]
+            
+        self.expansion_rate = rate
+        self.width = image_size[1] // patch_size[1]  # Width after patch embedding
+        self.height = image_size[0] // patch_size[0]  # Height after patch embedding
         self.num_patches = self.width * self.height
         self.dynamic = dynamic
-        self.mseloss = nn.MSELoss(reduction='mean')   # sum instead of mean
+        self.mseloss = nn.MSELoss(reduction='mean')
         self.num_layers = n_layers
 
+        # Position encoding based on patch grid size (after downsampling)
         pos_dim = dim // 2
         self.pos_y = SinusoidalPositionEncoding(d_model=pos_dim, max_len=self.height)
         self.pos_x = SinusoidalPositionEncoding(d_model=pos_dim, max_len=self.width)
@@ -976,14 +825,17 @@ class ImageHyperConnectionTransformer(nn.Module):
         pos_embed = torch.cat([self.pos_y(pos_y), self.pos_x(pos_x)], dim=-1)
         self.register_buffer('pos_embed', pos_embed, persistent=False)
 
+        # Patch embedding (downsamples if patch_size > 1)
         self.patch_embed = nn.Conv2d(in_channels, dim, kernel_size=patch_size, stride=patch_size)
         self.emb_dropout = nn.Dropout(dropout)
 
+        # Transformer layers
         self.layers = nn.ModuleList([
             ImageHyperConnectionBlock(
                 dim, n_heads, rate, layer_id, dropout, dynamic=self.dynamic
             ) for layer_id in range(n_layers)])
 
+        # Drop path
         if n_layers > 0 and drop_path > 0:
             dpr = torch.linspace(0, drop_path, n_layers).tolist()
         else:
@@ -992,15 +844,50 @@ class ImageHyperConnectionTransformer(nn.Module):
             DropPath(dpr[layer_id]) if dpr[layer_id] > 0.0 else nn.Identity()
             for layer_id in range(n_layers)
         ])
+        
+        # Final layers
         self.final_norm = RMSNorm(dim)
         self.classifier = nn.Linear(dim, num_classes)
-        self.cls_head = nn.Sequential(nn.Conv2d(in_channels=dim, out_channels=dim*2, kernel_size=1, stride=1, padding=0),
-                                      nn.GroupNorm(self.expansion_rate, dim*2),
-                                      nn.SiLU(),
-                                      nn.Conv2d(in_channels=dim*2,out_channels=num_classes,kernel_size=1,stride=1,padding=0))
         
-        self.mask_ratio = mask_ratio
+        # Classification head
+        # Enhanced classification head with skip connection
+        self.cls_head = nn.Sequential(
+            # First convolution block
+            nn.Conv2d(dim, dim * 2, kernel_size=3, padding=1),
+            nn.GroupNorm(min(8, dim * 2), dim * 2),
+            nn.GELU(),
+            nn.Dropout2d(dropout * 0.5),
+            
+            # Second convolution block
+            nn.Conv2d(dim * 2, dim * 4, kernel_size=3, padding=1),
+            nn.GroupNorm(min(8, dim * 4), dim * 4),
+            nn.GELU(),
+            nn.Dropout2d(dropout * 0.3),
+            
+            # Final projection
+            nn.Conv2d(dim * 4, num_classes, kernel_size=1)
+        )
+        
+        # Better upsampling: use transposed convolution or pixel shuffle
+        if patch_size[0] > 1 or patch_size[1] > 1:
+            # Option 1: Transposed convolution (learnable upsampling)
+            self.upsample = nn.Sequential(
+                nn.ConvTranspose2d(dim, dim, kernel_size=patch_size, stride=patch_size),
+                nn.GroupNorm(min(8, dim), dim),
+                nn.GELU(),
+            )
+            # Option 2: Pixel shuffle (sub-pixel convolution)
+            # self.upsample = nn.Sequential(
+            #     nn.Conv2d(dim, dim * (patch_size[0] * patch_size[1]), kernel_size=3, padding=1),
+            #     nn.PixelShuffle(patch_size[0]),
+            #     nn.GroupNorm(min(8, dim), dim),
+            #     nn.GELU(),
+            # )
+        else:
+            self.upsample = nn.Identity()
+        
         self.apply(init_transformer_weights)
+    
     def random_masking(self, x, mask_ratio=0.1):
         """
         Perform per-sample random masking by per-sample shuffling.
@@ -1029,285 +916,83 @@ class ImageHyperConnectionTransformer(nn.Module):
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
         return x_masked, mask, ids_restore
+    
     def forward(self, x: torch.Tensor, epoch=None, return_features=False):
-        hsi = x
-        #print(f"input image size: {x.shape}")
-        B = x.shape[0]
-        #print(f'self.patch_embed(x) shape: {self.patch_embed(x).shape}')
+    # Store original input size
+        original_spatial_size = x.shape[-2:]
+        
+        # Apply patch embedding (downsamples if patch_size > 1)
         x = self.patch_embed(x).flatten(2).transpose(1, 2) 
-        #print(f"patch embedding output shape: {x.shape}")   # B 96, 8, 8. --> B, 96, 64
         x = x + self.pos_embed.to(device=x.device, dtype=x.dtype)
         x = self.emb_dropout(x)
+        
         B, L, C = x.shape
         Y = []
         ids_restore = None
-        if self.training and self.mask_ratio > 0:
-            x, _, ids_restore = self.random_masking(x)
-            B, L, C = x.shape
+        
+        # if self.training and self.mask_ratio > 0:
+        #     x, _, ids_restore = self.random_masking(x)
+        #     B, L, C = x.shape
+            
         H = x.unsqueeze(2).repeat(1, 1, self.expansion_rate, 1)
-        spatial_regularized_loss = 0.
+        
         for layer, dp in zip(self.layers, self.drop_paths):
             H, alpha, beta_ffn, H_pre = dp(layer(H))
-            y = H.mean(dim=2).permute(0, 2, 1).contiguous()  # (B, C, L_keep or L)
+            y = H.mean(dim=2).permute(0, 2, 1).contiguous()
+            
             if self.mask_ratio == 0 or not self.training or ids_restore is None:
                 Y.append(y.view(B, C, self.width, self.height))
             else:
-                # Reconstruct the full-length token sequence before masking and fill to corresponding positions
+                # Reconstruct the full-length token sequence
                 len_keep = y.shape[-1]
                 L_full = self.num_patches
-                ids_shuffle = torch.argsort(ids_restore, dim=1)          # (B, L_full)
-                ids_keep = ids_shuffle[:, :len_keep]                      # (B, len_keep)
+                ids_shuffle = torch.argsort(ids_restore, dim=1)
+                ids_keep = ids_shuffle[:, :len_keep]
                 y_full = torch.zeros(B, C, L_full, device=y.device, dtype=y.dtype)
                 y_full.scatter_(2, ids_keep.unsqueeze(1).expand(-1, C, -1), y)
-                Y.append(y_full.view(B, C, self.width, self.height))    
-        # [Design Choice]Take the average of the final hyper hidden states,
-        #  which is common in vision tasks
+                Y.append(y_full.view(B, C, self.width, self.height))
+                
+        # Final processing
+        h_final = H.mean(dim=2)
         
-        #pdb.set_trace()
-        h_final = H.mean(dim=2)  # (B, L_keep or L_full, C)
-        #h_final = H.view(B, L, -1)
-        # If masking was used, need to first restore
-        # to full-length using ids_restore, then perform spatial reshape
         if self.training and self.mask_ratio > 0 and ids_restore is not None:
-            y_tokens = h_final.permute(0, 2, 1).contiguous()  # (B, C, L_keep)
+            y_tokens = h_final.permute(0, 2, 1).contiguous()
             len_keep = y_tokens.shape[-1]
             L_full = self.num_patches
-            ids_shuffle = torch.argsort(ids_restore, dim=1)      # (B, L_full)
-            ids_keep = ids_shuffle[:, :len_keep]                  # (B, len_keep)
+            ids_shuffle = torch.argsort(ids_restore, dim=1)
+            ids_keep = ids_shuffle[:, :len_keep]
             y_full = torch.zeros(B, C, L_full, device=y_tokens.device, dtype=y_tokens.dtype)
             y_full.scatter_(2, ids_keep.unsqueeze(1).expand(-1, C, -1), y_tokens)
-            h_final = y_full.permute(0, 2, 1).contiguous()        # (B, L_full, C)
+            h_final = y_full.permute(0, 2, 1).contiguous()
 
         h_final = self.final_norm(h_final)
         B, C = h_final.shape[0], h_final.shape[-1]
         h_final = h_final.view(B, self.height, self.width, C).permute(0, 3, 1, 2).contiguous()
-        #print(f"final feature map size: {h_final.shape}")
+        
+        # Upsample to original spatial size if patch_size > 1 (BEFORE classification head)
+        h_final = self.upsample(h_final)
+        
+        # Ensure feature maps match original input spatial dimensions
+        if h_final.shape[-2:] != original_spatial_size:
+            h_final = F.interpolate(
+                h_final, 
+                size=original_spatial_size, 
+                mode='bilinear', 
+                align_corners=True
+            )
+        
+        # Apply classification head on upsampled features
         logits = self.cls_head(h_final)
+        
         Y.append(logits)
-        if return_features: return Y
+        
+        if return_features: 
+            return Y
         return logits
 
 # ------------------------------------------------------------------------------------
-# 7. Decoder Model
+# 7. Testing Functions
 # ------------------------------------------------------------------------------------
-
-class HyperConnectionDecodeTransformer(nn.Module):
-    """
-    Decoder Architecture HyperConnection Transformer (autoregressive).
-    - Does not include KV cache (simple implementation).
-    - Supports past_len parameter to represent existing prefix length for constructing proper causal masks.
-    """
-    def __init__(self, vocab_size: int, max_len: int, dim: int, n_layers: int, 
-        n_heads: int, rate: int, dropout: float = 0.1):
-        super().__init__()
-        if dim % 2 != 0:
-            raise ValueError(f"dim must be even for SinusoidalPositionEncoding, got {dim}")
-        self.expansion_rate = rate
-        self.token_embedding = nn.Embedding(vocab_size, dim)
-        self.pos_encoding = SinusoidalPositionEncoding(d_model=dim, max_len=max_len)
-        self.emb_dropout = nn.Dropout(dropout)
-        self.max_len = max_len
-
-        self.layers = nn.ModuleList([
-            TextHyperConnectionBlock(
-                dim, n_heads, rate, layer_id, dropout
-            ) for layer_id in range(n_layers)
-        ])
-        self.final_norm = RMSNorm(dim)
-        self.lm_head = nn.Linear(dim, vocab_size)
-        self.apply(init_transformer_weights)
-
-    def _build_causal_mask(self, seq_len: int, past_len: int, device: torch.device):
-        """
-        Construct autoregressive causal mask: Returns boolean mask of shape (seq_len, total_k),
-          where True indicates allowed (attend) and False indicates masked.
-        total_k = past_len + seq_len
-        For query position i (0-based), allow access to all past positions (j < past_len) 
-            and j <= past_len + i in current segment.
-        """
-        total_k = past_len + seq_len
-        q_idx = torch.arange(seq_len, device=device).unsqueeze(1)  # (seq_len, 1)
-        k_idx = torch.arange(total_k, device=device).unsqueeze(0)  # (1, total_k)
-        allowed = (k_idx < past_len) | (k_idx <= (past_len + q_idx))
-        # Convert to float mask with 1/0 for compatibility where code checks mask==0
-        return allowed
-
-    def forward(self, input_ids: torch.Tensor, past_len: int = 0, mask: torch.Tensor = None):
-        
-        
-        """
-        Args:
-            input_ids: (batch, seq_len)
-            past_len: int, indicates existing prefix length (for causal mask)
-            mask: additional attention mask, applied with priority over causal mask
-        Returns:
-            logits: (batch, seq_len, vocab_size)
-        """
-        if self.training == True:
-            B, L = input_ids.shape
-            device = input_ids.device
-            if past_len + L > self.max_len:
-                raise ValueError(f"Input length + past_len ({past_len + L}) exceeds max_len ({self.max_len})")
-
-            tok_emb = self.token_embedding(input_ids)
-            positions = torch.arange(past_len, past_len + L, device=device, dtype=torch.float32).unsqueeze(0)
-            pos_emb = self.pos_encoding(positions).to(dtype=tok_emb.dtype)
-            h = self.emb_dropout(tok_emb + pos_emb)
-            H = h.unsqueeze(2).repeat(1, 1, self.expansion_rate, 1)
-
-            causal_mask = torch.triu(
-                torch.ones(L, L, device=device, dtype=torch.bool),
-                diagonal=1,
-            )
-            attn_mask = causal_mask
-
-            for layer in self.layers:
-                H = layer(H, mask=attn_mask)
-            h_final = H.mean(dim=2)
-            h_final = self.final_norm(h_final)
-            logits = self.lm_head(h_final)
-            return logits
-        else:
-            B, L = input_ids.shape
-            device = input_ids.device
-            if past_len + L > self.max_len:
-                raise ValueError(f"Input length + past_len ({past_len + L}) exceeds max_len ({self.max_len})")
-
-            tok_emb = self.token_embedding(input_ids)
-            positions = torch.arange(past_len, past_len + L, device=device, dtype=torch.float32).unsqueeze(0)
-            pos_emb = self.pos_encoding(positions).to(dtype=tok_emb.dtype)
-            h = self.emb_dropout(tok_emb + pos_emb)
-            H = h.unsqueeze(2).repeat(1, 1, self.expansion_rate, 1)
-
-            causal_mask = torch.triu(
-                torch.ones(L, L, device=device, dtype=torch.bool),
-                diagonal=1,
-            )
-            attn_mask = causal_mask
-
-            for layer in self.layers:
-                H = layer(H, mask=attn_mask)
-            h_final = H.mean(dim=2)
-            h_final = self.final_norm(h_final)
-            logits = self.lm_head(h_final)
-            return logits
-    
-
-def plot_16_hist2d(X, e, bins=200):
-    N, C = X.shape
-    fig, axes = plt.subplots(2, 3, figsize=(8, 8))
-    axes = axes.flatten()
-
-    x = np.arange(N)
-
-    for i in range(4):
-        ax = axes[i]
-        h = ax.hist2d(x, X[:, i], bins=bins)
-        # ax.set_title(f"Stream {i+1}")
-        # ax.set_xlabel("Pixel index")
-        # ax.set_ylabel("Value")
-        plt.colorbar(h[3], ax=ax)
-
-    plt.tight_layout()
-    plt.savefig(f"./rate/scatter_epoch_{e}.png", bbox_inches="tight")
-    plt.close(fig)
-    
-    plot_all_12_nondiagonal_pairs(X, e, 2)
-
-def plot_16_H_res(X, e, beta_ffn, H_pre, rate):
-    B, H, W, Num = X.shape
-    fig, axes = plt.subplots(2, 2, figsize=(8, 8))
-    axes = axes.flatten()
-    for i in range(Num):
-        ax = axes[i]
-        h = ax.imshow(X[0, :, :, i])
-        plt.colorbar(h, ax=ax)
-
-    plt.tight_layout()
-    plt.savefig(f"./rate/H_res_{e}.png", bbox_inches="tight")
-    plt.close(fig)
-    
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    axes = axes.flatten()
-    for i in range(rate):
-        ax = axes[i]
-        tmp = beta_ffn.detach().cpu().numpy()[0, :, i].reshape(H, W)
-        h = ax.imshow(tmp)
-        plt.colorbar(h, ax=ax)
-
-    plt.tight_layout()
-    plt.savefig(f"./rate/H_post_{e}.png", bbox_inches="tight")
-    plt.close(fig)
-    
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    axes = axes.flatten()
-    for i in range(rate):
-        ax = axes[i]
-        tmp = H_pre.detach().cpu().numpy()[0, :, i, 0].reshape(H, W)
-        h = ax.imshow(tmp)
-        plt.colorbar(h, ax=ax)
-
-    plt.tight_layout()
-    plt.savefig(f"./rate/H_pre_{e}.png", bbox_inches="tight")
-    plt.close(fig)
-    
-def plot_all_12_nondiagonal_pairs(X, e, S=4):
-    """
-    X: (N, 16) flattened 4x4 matrices
-    """
-
-    pairs = [(i, j) for i in range(S) for j in range(S) if i != j]
-
-    fig, axes = plt.subplots(3, 4, figsize=(20, 15))
-    axes = axes.flatten()
-
-    for ax, (i, j) in zip(axes, pairs):
-        idx_ij = i * S + j
-        idx_ji = j * S + i
-
-        x = X[:, idx_ij]
-        y = X[:, idx_ji]
-
-        scatter_density_xy(x, y, ax)
-
-        ax.set_title(
-            rf"$\mathcal{{H}}^{{\mathrm{{Res}}}}({i+1},{j+1}) joint \mathcal{{H}}^{{\mathrm{{Res}}}}[{j+1},{i+1}]$",
-            fontsize=14
-        )
-        ax.set_xlabel(rf"$\mathcal{{H}}^{{\mathrm{{Res}}}}[{i+1},{j+1}]$")
-        ax.set_ylabel(rf"$\mathcal{{H}}^{{\mathrm{{Res}}}}[{j+1},{i+1}]$")
-
-        lims = [
-            min(x.min(), y.min()),
-            max(x.max(), y.max())
-        ]
-        ax.plot(lims, lims, "k--", alpha=0.5)
-        ax.set_xlim(lims)
-        ax.set_ylim(lims)
-    plt.tight_layout()
-    plt.savefig(f"./scatter_plot/off_diagonal_epoch_{e}.png", bbox_inches="tight")
-    plt.close(fig)
-
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde
-
-def scatter_density_xy(x, y, ax, s=4):
-    xy = np.vstack([x, y])
-    z = gaussian_kde(xy)(xy)
-
-    idx = z.argsort()
-    x, y, z = x[idx], y[idx], z[idx]
-
-    sc = ax.scatter(x, y, c=z, s=s)
-    return sc
-
-import os
-import torch
-import numpy as np
-import tifffile
-from PIL import Image
-from pathlib import Path
 
 def load_image_label_pair(image_path, label_path):
     """Load an image-label pair"""
@@ -1336,7 +1021,7 @@ def load_image_label_pair(image_path, label_path):
     
     return img_tensor, label_tensor
 
-def test_mhc_training():
+def test_mhc_training(patch_size = 2, dim = 64, n_layers = 3):
     """Test mHC model in training mode with real data"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -1362,35 +1047,41 @@ def test_mhc_training():
             print(f"Pair {i+1}: {img_path.name}")
     
     if not test_pairs:
-        raise FileNotFoundError("No matching image-label pairs found!")
-    
-    # Load 3 image-label pairs
-    images = []
-    labels = []
-    
-    for img_path, label_path in test_pairs:
-        img_tensor, label_tensor = load_image_label_pair(img_path, label_path)
-        images.append(img_tensor)
-        labels.append(label_tensor)
-        print(f"Image shape: {img_tensor.shape}, Label shape: {label_tensor.shape}")
-    
-    # Stack into batch
-    batch_images = torch.stack(images)  # [3, 64, 224, 224]
-    batch_labels = torch.stack(labels)  # [3, 224, 224]
+        print("No matching image-label pairs found! Using random data for testing.")
+        # Create random data for testing
+        batch_images = torch.randn(3, 64, 224, 224)
+        batch_labels = torch.randint(0, 13, (3, 224, 224))
+        batch_images, batch_labels = batch_images.to(device), batch_labels.to(device)
+    else:
+        # Load 3 image-label pairs
+        images = []
+        labels = []
+        
+        for img_path, label_path in test_pairs:
+            img_tensor, label_tensor = load_image_label_pair(img_path, label_path)
+            images.append(img_tensor)
+            labels.append(label_tensor)
+            print(f"Image shape: {img_tensor.shape}, Label shape: {label_tensor.shape}")
+        
+        # Stack into batch
+        batch_images = torch.stack(images)  # [3, 64, 224, 224]
+        batch_labels = torch.stack(labels)  # [3, 224, 224]
+        batch_images = batch_images.to(device)
+        batch_labels = batch_labels.to(device)
     
     print(f"\nBatch images shape: {batch_images.shape}")
     print(f"Batch labels shape: {batch_labels.shape}")
     print(f"Images range: [{batch_images.min():.3f}, {batch_images.max():.3f}]")
     print(f"Labels unique values: {torch.unique(batch_labels)}")
     
-    # Create mHC model (same config as train.py)
-    model = ImageHyperConnectionTransformer(
+    # Create mHC model
+    model = ImageHyperConnectionTransformer_spec_spa(
         image_size=224,
-        patch_size=1,
+        patch_size=patch_size,
         in_channels=64,
         num_classes=13,
-        dim=64,
-        n_layers=4,
+        dim=dim,
+        n_layers=n_layers,
         n_heads=4,
         rate=4,
         dropout=0.1,
@@ -1407,8 +1098,6 @@ def test_mhc_training():
     print("="*60)
     
     model.train()
-    batch_images = batch_images.to(device)
-    batch_labels = batch_labels.to(device)
     
     with torch.no_grad():
         outputs = model(batch_images)
@@ -1432,7 +1121,7 @@ def test_mhc_training():
     loss = criterion(outputs, batch_labels)
     print(f"Loss value: {loss.item():.4f}")
     
-    # Backward pass - this is where the error occurs
+    # Backward pass
     try:
         loss.backward()
         print("✓ Backward pass successful!")
@@ -1455,8 +1144,10 @@ def test_mhc_training():
         
     except Exception as e:
         print(f"✗ Error during backward pass: {type(e).__name__}: {e}")
-        print("\nThe error is in the scatter_add operation.")
-        print("Quick fix: Remove the problematic clustering/scatter_add operations.")
+        print("\nDebug information:")
+        print(f"Model training mode: {model.training}")
+        print(f"Batch images device: {batch_images.device}")
+        print(f"Model device: {next(model.parameters()).device}")
         return False
     
     # Test 3: Multiple training steps
@@ -1491,6 +1182,67 @@ def test_mhc_training():
     
     return True
 
+# 
+def print_model_summary(model, input_size=(64, 224, 224), device='cuda'):
+    """
+    Print detailed summary of the model including parameters, layers, and memory usage.
+    
+    Args:
+        model: The PyTorch model to summarize
+        input_size: Input tensor size (channels, height, width)
+        device: Device to run summary on ('cuda' or 'cpu')
+    """
+    print("\n" + "="*80)
+    print("MODEL SUMMARY")
+    print("="*80)
+    
+    # Method 1: torchsummary (simple layer-wise summary)
+    print("\n--- torchsummary Summary ---")
+    try:
+        summary(model, input_size=input_size, device=device)
+    except Exception as e:
+        print(f"torchsummary failed: {e}")
+    
+    # Method 2: torchinfo (more detailed)
+    print("\n--- torchinfo Detailed Summary ---")
+    try:
+        batch_size = 2
+        summary_result = torchinfo_summary(
+            model, 
+            input_size=(batch_size, *input_size),
+            verbose=1,
+            col_names=["input_size", "output_size", "num_params", "kernel_size", "trainable"],
+            col_width=20,
+            row_settings=["var_names"]
+        )
+        print(summary_result)
+    except Exception as e:
+        print(f"torchinfo failed: {e}")
+    
+    # Method 3: Custom parameter count
+    print("\n--- Custom Parameter Analysis ---")
+    total_params = 0
+    trainable_params = 0
+    layer_info = []
+    
+    for name, param in model.named_parameters():
+        params = param.numel()
+        total_params += params
+        if param.requires_grad:
+            trainable_params += params
+        layer_info.append({
+            'name': name,
+            'shape': tuple(param.shape),
+            'params': params,
+            'trainable': param.requires_grad
+        })
+    
+    print(f"Total Parameters: {total_params:,}")
+    print(f"Trainable Parameters: {trainable_params:,}")
+    print(f"Non-trainable Parameters: {total_params - trainable_params:,}")
+    print(f"Model Size: {total_params * 4 / (1024**2):.2f} MB (assuming float32)")
+    print("="*80)
+
 # ------------------------------------------------------------------------------------
 # 9. Test Cases
 # ------------------------------------------------------------------------------------
@@ -1498,23 +1250,26 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device used: {device}")
     
-    # --- Image Model Test ---
+    # --- Basic Image Model Test ---
     image_size = 224
     in_channels = 64
     num_classes= 13
-    img_model = ImageHyperConnectionTransformer(
-        image_size=image_size, patch_size=1, in_channels=in_channels, num_classes=num_classes,
-        dim=64, n_layers=6, n_heads=8, rate=4, dropout=0.1
+    patch_size = 2
+    dim = 64
+    n_layers = 4
+    n_heads = 4
+    img_model = ImageHyperConnectionTransformer_spec_spa(
+        image_size=image_size, patch_size=patch_size, in_channels=in_channels, num_classes=num_classes,
+        dim=dim, n_layers=n_layers, n_heads=n_heads, rate=4, dropout=0.1
     )
     img_model = img_model.to(device)
     
     print("\n" + "=" * 60)
-    print("Image Hyper-Connections Transformer Model Test")
+    print("Basic Image Hyper-Connections Transformer Model Test")
     print("=" * 60)
     
-    # Run model
+    # Run model with dummy data
     dummy_img = torch.randn(1, in_channels, image_size, image_size, device=device)
-    #print(f"Input image shape: {dummy_img.shape}")
     logits = img_model(dummy_img)
     print(f"Logits shape: {logits.shape}")
     assert logits.shape == (1, num_classes, image_size, image_size), "Image model output shape incorrect!"
@@ -1523,104 +1278,10 @@ if __name__ == '__main__':
     print("Image model forward and backward propagation test passed.")
     print("-" * 60)
 
-    # Test using a real example
-    import os
-    import torch
-    import numpy as np
-    import tifffile
-    from PIL import Image
-    import matplotlib.pyplot as plt
-
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
-    # Your image directory
-    image_dir = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/train_val_test_patches/patches/train/alphaearth/img"
-
-    # Find a .tif file
-    tif_files = [f for f in os.listdir(image_dir) if f.endswith('.tif')]
-    if not tif_files:
-        raise FileNotFoundError(f"No .tif files found in {image_dir}")
-
-    # Take the first .tif file
-    test_file = os.path.join(image_dir, tif_files[0])
-    print(f"Testing with: {test_file}")
-
-    # Load the .tif image
-    try:
-        # Try tifffile first
-        img = tifffile.imread(test_file)
-    except:
-        # Fallback to PIL
-        img = np.array(Image.open(test_file))
-
-    print(f"Image shape: {img.shape}")
-    print(f"Image dtype: {img.dtype}")
-
-    # Preprocess: Ensure [64, H, W] format
-    if len(img.shape) == 3:
-        if img.shape[0] == 64:  # Already [C, H, W]
-            pass
-        elif img.shape[2] == 64:  # [H, W, C] -> [C, H, W]
-            img = np.transpose(img, (2, 0, 1))
-        else:
-            raise ValueError(f"Expected 64 channels, got {img.shape}")
-
-    # Convert to tensor and normalize
-    img_tensor = torch.from_numpy(img).float()
-    img_tensor = img_tensor.unsqueeze(0)  # Add batch dimension
-    img_tensor = img_tensor / 255.0  # Simple normalization
-
-    print(f"Input tensor shape: {img_tensor.shape}")
-
-    # Create the model (same as your train.py)
-    model = ImageHyperConnectionTransformer(
-        image_size=224,
-        patch_size=1,
-        in_channels=64,
-        num_classes=13,
-        dim=64,
-        n_layers=4,
-        n_heads=4,
-        rate=4,
-        dropout=0.1,
-        drop_path=0.1,
-        mask_ratio=0.0,
-        dynamic=True
-    )
-
-    model = model.to(device)
-    model.eval()
-
-    # Move input to device and run
-    img_tensor = img_tensor.to(device)
-
-    with torch.no_grad():
-        print("\nRunning forward pass...")
-        output = model(img_tensor)
-        
-        # Handle output (it might be logits or tuple)
-        if isinstance(output, tuple):
-            logits = output[0] if len(output) > 0 else output
-        else:
-            logits = output
-        
-        print(f"Output shape: {logits.shape}")
-        
-        # Get predictions
-        predictions = torch.argmax(logits, dim=1)
-        print(f"Predictions shape: {predictions.shape}")
-        
-        # Count classes
-        unique_classes, counts = torch.unique(predictions, return_counts=True)
-        print("\nPredicted class distribution:")
-        for cls, count in zip(unique_classes.cpu(), counts.cpu()):
-            percentage = count.item() / predictions.numel() * 100
-            print(f"  Class {cls}: {percentage:.1f}%")
-
-    # Test training with real data
+    # --- Real Training Test ---
     print("\n" + "="*60)
+    print("Real Training Test")
+    print("="*60)
     success = test_mhc_training()
     
     if success:
@@ -1628,6 +1289,32 @@ if __name__ == '__main__':
         print("Ready for full training pipeline.")
     else:
         print("\n❌ Model failed training tests.")
-        print("Need to fix the scatter_add gradient issue.")
+        print("Need to investigate the issue.")
     
 
+    print("\n" + "="*80)
+    print("MODEL ARCHITECTURE ANALYSIS")
+    print("="*80)
+    
+    # Create a model instance for summary
+    model_for_summary = ImageHyperConnectionTransformer_spec_spa(
+        image_size=224,
+        patch_size=patch_size,
+        in_channels=64,
+        num_classes=13,
+        dim=dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        rate=4,
+        dropout=0.1,
+        drop_path=0.0,
+        mask_ratio=0.0,
+        dynamic=True
+    ).to(device)
+    
+    # Print the model summary
+    print_model_summary(model_for_summary, input_size=(64, 224, 224), device=device)
+    
+    # Also print the model structure in a simple way
+    print("\n--- Model Structure (Simplified) ---")
+    print(model_for_summary)
