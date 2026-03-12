@@ -12,4 +12,9 @@ train_val_test_patches/LC_remapped.tif
 wandb_api_key.txt
 experiments/
 train_val_test_patches_128x128/
-
+clustered_datasets/
+train_val_test_patches_128x128_v2/
+train_val_test_patches_224x224_v2/
+train_val_test_patches_128x128_purity_threshold_0.3_v2/
+train_val_test_patches_224x224_purity_threshold_0.3_v2/
+filtered_ground_truth/

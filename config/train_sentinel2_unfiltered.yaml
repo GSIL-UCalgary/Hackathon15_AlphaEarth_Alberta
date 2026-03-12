@@ -1,0 +1,35 @@
+model_name: cluster_MambaHSI
+sensor_name: sentinel2
+label_type: unfiltered
+
+# Original data with splits
+data_root: "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/train_val_test_patches/patches"
+
+# Clustered data with pre-generated clusters
+clustered_data_root: "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/clustered_datasets"
+
+dataset_config: "train_val_test_patches/multisensor_dataset_config.json"
+output_dir: "./results"
+
+epochs: 200
+batch_size: 1  # Fixed for cluster_MambaHSI
+learning_rate: 0.0003
+weight_decay: 0.00001
+loss_fn: cross_entropy
+optimizer: adamw
+scheduler: cosine
+
+hidden_dim: 128
+token_num: 16
+group_num: 16
+
+ignore_index: -99
+class_weights: null
+use_amp: false
+num_workers: 4
+save_every: 10
+
+use_wandb: true
+wandb_project: "AlphaEarth_Alberta_2020"
+wandb_entity: "saeid_taleghani"
+seed: 42

@@ -1,7 +1,7 @@
-# """
-# Scene Classification for Multi-Sensor Data
-# Classifies entire scenes and saves in the same folder as trained model
-# """
+"""
+Scene Classification for Multi-Sensor Data
+Classifies entire scenes and saves in the same folder as trained model
+"""
 
 import os
 import torch
@@ -16,20 +16,18 @@ import yaml
 import warnings
 from datetime import datetime
 warnings.filterwarnings('ignore')
-import time
+
 # Import your models
 from models import (
-    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, ConvNeXtForSegmentation, MambaHSISegWrapper,SimpleViTSegmentation,
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper, ImageHyperConnectionTransformer, ImageHyperConnectionTransformer_mhc, 
-    MambaHSI,Global_superxiel_model, ParallelGraphMHCSegNet
+    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, ConvNeXtForSegmentation, Global_superxiel_model, ImageHyperConnectionTransformer_mhc,
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper, ImageHyperConnectionTransformer, #ImageHyperConnectionTransformerWrapper
 )
 
-start= time.time()
 # ==================== PREDEFINED SCENE PATHS ====================
 SCENE_PATHS = {
-    'landsat8': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Alberta_L8_2020/Alberta_2020_NAD83_StatsCan_L8_30m_Mosaics_EPSG_3979_Clipped_Stack/Alberta_2020_L8_Stacked_6Bands.tif",
-    'sentinel2': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Alberta_Sentinel2_2020/Alberta_2020_NAD83_StatsCan_Sentinel2_30m_Mosaics_EPSG_3979_Clipped_Stack/Alberta_2020_S2_Stacked_10Bands.tif",
-    'alphaearth': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/AlphaEarth_Dataset/Alberta_2020_NAD83_StatsCan_AlphaEarth_30m_Mosaics_EPSG_3979_Clipped_Stack/Alberta_2020_AlphaEarth_Stacked_64Bands.tif"
+    'landsat8': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Saskatchewan/Landsat/Saskatchewan_2020_NAD83_StatsCan_L8_30m_Mosaics_EPSG_3979_Clipped_Stack/Saskatchewan_2020_L8_Stacked_6Bands.tif",
+    'sentinel2': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Saskatchewan/Sentinel2/Saskatchewan_2020_NAD83_StatsCan_Sentinel2_30m_Mosaics_EPSG_3979_Clipped_Stack/Saskatchewan_2020_S2_Stacked_10Bands.tif",
+    'alphaearth': "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Saskatchewan/AlphaEarth/Saskatchewan_2020_AlphaEarth_Stacked_64Bands.tif"
 }
 
 def create_model(model_name, sensor_name, config):
@@ -62,145 +60,65 @@ def create_model(model_name, sensor_name, config):
     
     if model_name == 'MIMUNet':
         return MIMUNet(**model_config)
-    
-    elif model_name == 'Cluster_MambaHSI':
-        return MambaHSI(in_channels=input_channels,
-                        hidden_dim=64,
-                        num_classes=num_classes, 
-                        use_residual=True,
-                        mamba_type='both',
-                        token_num=4,
-                        group_num=4,
-                        use_att=True,
-                        num_clusters=20*3,
-                        sparsity_ratio=1.0,
-                        attention_heads=4,
-                        selection_mode='cluster')
-    # --------------------------------------------------
-    # OBIA Mamba  
-    # --------------------------------------------------
-    elif model_name == 'OBIA_Mamba':
-        return Global_superxiel_model(num_classes=num_classes, 
-                                      num_superpixel=600, 
-                                      dim=64, 
-                                      d_conv=6, 
-                                      in_channel=input_channels,
-                                      total_pixel=224*224
-        )
+    elif model_name == 'FocalUNet':
+        return FocalUNet(**model_config)
+    elif model_name == 'SepViTUNet':
+        return SepViTUNet(**model_config)
+    # elif model_name == 'mHC_cluster':
+    #     return ImageHyperConnectionTransformerWrapper(
+    #         in_channels=input_channels,       # 64 for alphaearth
+    #         num_classes=num_classes,          # 13 classes
+    #         image_size=128,                   # Input image size
+    #         dim=64,                           # ✅ Increased from 12 to 64 (must be divisible by 4)
+    #         n_layers=4,                       # ✅ Reduced layers for memory efficiency
+    #         n_heads=4,                        # Number of attention heads (64/4 = 16 per head)
+    #         rate=4,                           # ✅ Reduced from 4 to 2 for memory
+    #         patch_size=1,                     # No downsampling for segmentation
+    #         dropout=0.1,
+    #         drop_path=0.1,
+    #         mask_ratio=0.0,                   # ✅ Disable masking for segmentation
+    #         dynamic=True                      # Dynamic hyper-connections
+    #     )
+    elif model_name == 'mHC_cluster':
+        return ImageHyperConnectionTransformer(
+        image_size=224,
+        patch_size=1,
+        in_channels=input_channels,
+        num_classes=num_classes,
+        dim=64,
+        n_layers=3,
+        n_heads=4,
+        rate=4,
+        dropout=0.0,
+        drop_path=0.0,
+        mask_ratio=0.0,
+        dynamic=True
+    )
     # --------------------------------------------------
     # Physical mHC Mamba
     # --------------------------------------------------
     elif model_name == 'physical_mhc_mamba':
-        image_size = 224
-        patch_size = 4
-        depth = 4
-        num_heads = 4
-        mlp_ratio = 4.0
-        dropout = 0.1
-        n_layers = 4
-        n_heads = 4 
-        rate = 4 
-        mask_ratio= 0.0
-        dynamic = True
-        embed_dim = 160
-        print(f"physical_mhc_mamba config - n_layers: {n_layers}, embed_dim: {embed_dim}")
-        # Store them in hyperparameters dict
-        model_hyperparameters = {
-            'physical_mhc_mamba_img_size': image_size,
-            'physical_mhc_mamba_patch_size': patch_size,
-            'physical_mhc_mamba_depth': depth,
-            'physical_mhc_mamba_num_heads': num_heads,
-            'physical_mhc_mamba_mlp_ratio': mlp_ratio,
-            'physical_mhc_mamba_n_layers': n_layers,
-            'physical_mhc_mamba_n_heads': n_heads,
-            'physical_mhc_mamba_rate': rate,
-            'physical_mhc_mamba_mask_ratio': mask_ratio,
-            'physical_mhc_mamba_dynamic': dynamic,
-            'physical_mhc_mamba_dropout': dropout,
-            'physical_mhc_mamba_embed_dim': embed_dim
-        }
-
-        model = ImageHyperConnectionTransformer_mhc(
-        image_size=image_size,
-        patch_size=patch_size,
+        return ImageHyperConnectionTransformer_mhc(
+        image_size=224,
+        patch_size=1,
         in_channels=input_channels,
         num_classes=num_classes,
-        dim=embed_dim,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        rate=rate,
-        dropout=dropout,
-        mask_ratio=mask_ratio,
-        dynamic=dynamic,
+        dim=5*16,
+        n_layers=2,
+        n_heads=2,
+        rate=4,
+        dropout=0.1,
+        mask_ratio=0.0,
+        dynamic=True,
         sensor_name=sensor_name
-                 )
-        
-        return model
-    
-    # --------------------------------------------------
-    # Parallel Graph-mHC SegNet
-    # --------------------------------------------------
-    elif model_name == 'ParallelGraphMHCSegNet':
-        # Store them in hyperparameters dict
-        image_size = 224
-        in_channels=input_channels
-        stem_dim=64 # training_config.get('hidden_dim', 64)
-        num_classes=num_classes
-        mhc_block_dims=[64, 128, 256]
-        mamba_blocks_per_stage=[2, 4, 6]
-        patch_gcn_dims=[128, stem_dim]
-        spatial_gcn_dims=[128, stem_dim]
-        sigma=1.0
-        spatial_stride=8
-        knn_k=10
-        fusion_strategy='cat'
-        fusion_out_dim=256
-        seg_head_dims=[128, 64]
-        model_hyperparameters = {
-            'ParallelGraphMHCSegNet_img_size': image_size,
-            'ParallelGraphMHCSegNet_in_channels': in_channels,
-            'ParallelGraphMHCSegNet_stem_dim': stem_dim,
-            'ParallelGraphMHCSegNet_num_classes': num_classes,
-            'ParallelGraphMHCSegNet_mhc_block_dims': mhc_block_dims,
-            'ParallelGraphMHCSegNet_mamba_blocks_per_stage': mamba_blocks_per_stage,
-            'ParallelGraphMHCSegNet_patch_gcn_dims': patch_gcn_dims,
-            'ParallelGraphMHCSegNet_spatial_gcn_dims': spatial_gcn_dims,
-            'ParallelGraphMHCSegNet_sigma': sigma,
-            'ParallelGraphMHCSegNet_spatial_stride': spatial_stride,
-            'ParallelGraphMHCSegNet_knn_k': knn_k,
-            'ParallelGraphMHCSegNet_fusion_strategy': fusion_strategy,
-            'ParallelGraphMHCSegNet_fusion_out_dim': fusion_out_dim,
-            'ParallelGraphMHCSegNet_seg_head_dims': seg_head_dims
-        }
-
-        model = ParallelGraphMHCSegNet(
-            in_channels=in_channels,
-            stem_dim=stem_dim,
-            num_classes=num_classes,
-            mhc_block_dims=mhc_block_dims,
-            mamba_blocks_per_stage=mamba_blocks_per_stage,
-            patch_gcn_dims=patch_gcn_dims,
-            spatial_gcn_dims=spatial_gcn_dims,
-            sigma=sigma,
-            spatial_stride=spatial_stride,
-            knn_k=knn_k,
-            fusion_strategy=fusion_strategy,
-            fusion_out_dim=fusion_out_dim,
-            seg_head_dims=seg_head_dims,
-        )
-
-        return model
-
-    # --------------------------------------------------
-    #  SwinUNet
-    # --------------------------------------------------
+    )
     elif model_name == 'SwinUNet':
         swin_config = {
             'img_size': 224,
             'in_channels': input_channels,
             'num_classes': num_classes,
-            'embed_dim': 96,
-            'depths': [1, 1, 2,1],
+            'embed_dim': 32,
+            'depths': [2, 2, 6, 2],
             'heads': [1, 2, 4, 8],
             'patch_size': 4,
             'window_size': 7
@@ -219,60 +137,10 @@ def create_model(model_name, sensor_name, config):
         }
         return ConvNeXtForSegmentation(**convnext_config)
     
-    # --------------------------------------------------
-    # MambaHSISeg
-    # --------------------------------------------------
-    elif model_name == 'MambaHSISeg':
-        mamba_config = {
-            'in_channels': input_channels,
-            'num_classes': num_classes,
-            'base_dim': 64,           # c1 dimension
-            'mamba_type': 'both',     # 'spa', 'spe', or 'both'
-            'token_num': 16,           # for SpeMamba
-            'use_residual': True,
-            'group_num': 16,
-            'use_att': True,          # attention fusion for BothMamba
-            'use_stem': True          # whether to use initial downsampling
-        }
-        return MambaHSISegWrapper(mamba_config)
-    # --------------------------------------------------
-    # ViT
-    # --------------------------------------------------
-    if model_name == 'ViT':
-        # Define all hardcoded values here
-        vit_img_size = 224
-        vit_patch_size = 7
-        vit_depth = 3
-        vit_num_heads = 4
-        vit_mlp_ratio = 4.0
-        vit_dropout = 0.1
-        vit_embed_dim = 64
-        
-        # Store them in hyperparameters dict
-        model_hyperparameters = {
-            'vit_img_size': vit_img_size,
-            'vit_patch_size': vit_patch_size,
-            'vit_depth': vit_depth,
-            'vit_num_heads': vit_num_heads,
-            'vit_mlp_ratio': vit_mlp_ratio,
-            'vit_dropout': vit_dropout,
-            'vit_embed_dim': vit_embed_dim
-        }
-
-
-        vit_config = {
-            'img_size': vit_img_size,
-            'in_chans': input_channels,
-            'embed_dim': vit_embed_dim,
-            'patch_size': vit_patch_size,
-            'depth': vit_depth,
-            'num_heads': vit_num_heads,
-            'mlp_ratio': vit_mlp_ratio,
-            'dropout': vit_dropout,
-            'num_classes': num_classes
-        }
-        return SimpleViTSegmentation(**vit_config)
-    
+    elif model_name == 'CATUNet':
+        return CATUNet(**model_config)
+    elif model_name == 'TwinsUNet':
+        return TwinsUNet(**model_config)
     elif model_name == 'BasicUNet':
         model_config = {
             'in_channels': input_channels,
@@ -321,15 +189,10 @@ def patch_generator(scene_array, patch_size, overlap=0):
             yield r, c, patch
 
 
-def save_classification_results_with_gdal(classified_scene,
-                                           transform,
-                                            output_dir,
-                                            scene_name,
-                                            timestamp,
-                                            save_probabilities=False):
+def save_classification_results_with_gdal(classified_scene, transform, output_dir, scene_name, timestamp, save_probabilities=False):
     """
     Save classification results using GDAL with exact EPSG:3979 CRS.
-    Clips to Alberta boundary using gdal.Warp.
+    Clips to Saskatchewan boundary using gdal.Warp.
     
     Args:
         classified_scene: 2D numpy array of class labels (0-12 after prediction)
@@ -366,7 +229,7 @@ def save_classification_results_with_gdal(classified_scene,
         19: {'name': 'Snow and ice', 'color': (255, 250, 255)}
     }
     
-    # Alberta classes (13 classes) and their mapping to Canada-wide IDs
+    # Saskatchewan classes (13 classes) and their mapping to Canada-wide IDs
     ALBERTA_TO_CANADA_MAPPING = {
         0: 1,   # Temperate needleleaf forest -> Temperate or sub-polar needleleaf forest
         1: 2,   # Sub-polar taiga forest -> Sub-polar taiga needleleaf forest
@@ -383,23 +246,23 @@ def save_classification_results_with_gdal(classified_scene,
         12: 19  # Snow/ice -> Snow and ice
     }
     
-    # Create a list of ALL Canada classes that should appear in Alberta
+    # Create a list of ALL Canada classes that should appear in Saskatchewan
     ALBERTA_CANADA_CLASSES = sorted(ALBERTA_TO_CANADA_MAPPING.values())
     
-    # Remap the classified scene from Alberta classes (0-12) to Canada-wide classes
-    print("Remapping Alberta classes (0-12) to Canada Land Cover classes...")
+    # Remap the classified scene from Saskatchewan classes (0-12) to Canada-wide classes
+    print("Remapping Saskatchewan classes (0-12) to Canada Land Cover classes...")
     remapped_scene = np.zeros_like(classified_scene, dtype=np.int16)  # Use int16 to support -99
     
     # First, set all pixels to -99 (outside boundary)
     remapped_scene.fill(-99)
     
-    # Then map each Alberta class to its Canada-wide equivalent
+    # Then map each Saskatchewan class to its Canada-wide equivalent
     for alberta_class, canada_class in ALBERTA_TO_CANADA_MAPPING.items():
         mask = classified_scene == alberta_class
         if mask.any():
             remapped_scene[mask] = canada_class
             canada_name = CANADA_CLASS_DEFINITIONS[canada_class]['name']
-            print(f"  Mapped Alberta class {alberta_class} -> Canada class {canada_class} ({canada_name})")
+            print(f"  Mapped Saskatchewan class {alberta_class} -> Canada class {canada_class} ({canada_name})")
     
     # ==================== SAVE TEMPORARY UNCLIPPED FILE ====================
     print("\nCreating temporary unclipped raster...")
@@ -460,7 +323,7 @@ def save_classification_results_with_gdal(classified_scene,
             LENGTHUNIT["metre",1]],
     USAGE[
         SCOPE["Transformation of coordinates at 5m level of accuracy."],
-        AREA["Canada - onshore and offshore - Alberta; British Columbia; Manitoba; New Brunswick; Newfoundland and Labrador; Northwest Territories; Nova Scotia; Nunavut; Ontario; Prince Edward Island; Quebec; Saskatchewan; Yukon."],
+        AREA["Canada - onshore and offshore - Saskatchewan; British Columbia; Manitoba; New Brunswick; Newfoundland and Labrador; Northwest Territories; Nova Scotia; Nunavut; Ontario; Prince Edward Island; Quebec; Saskatchewan; Yukon."],
         BBOX[38.21,-141.01,86.46,-40.73]],
     ID["EPSG",3979]]'''
     
@@ -476,28 +339,28 @@ def save_classification_results_with_gdal(classified_scene,
     
     print(f"  Temporary file saved: {temp_file}")
     
-    # ==================== CLIP WITH ALBERTA BOUNDARY ====================
-    print("\nClipping with Alberta boundary using gdal.Warp...")
+    # ==================== CLIP WITH Saskatchewan BOUNDARY ====================
+    print("\nClipping with Saskatchewan boundary using gdal.Warp...")
     
-    alberta_shapefile = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Alberta_EPSG_3979.gpkg"
+    saskatchewan_shapefile = "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/preprocessing/Saskatchewan/Saskatchewan_boudary/Saskatchewan_Shapefile_epsg_3979.gpkg"
     
     # Output file path for clipped raster
     label_path = output_dir / f"{scene_name}_labels_{timestamp}_CLIPPED.tif"
     
-    if not Path(alberta_shapefile).exists():
-        print(f"  ERROR: Alberta shapefile not found at: {alberta_shapefile}")
+    if not Path(saskatchewan_shapefile).exists():
+        print(f"  ERROR: Saskatchewan shapefile not found at: {saskatchewan_shapefile}")
         print(f"  Skipping clipping...")
         # Just rename temp file to output
         temp_file.rename(label_path)
         is_clipped = False
     else:
-        print(f"  Using Alberta boundary: {alberta_shapefile}")
+        print(f"  Using Saskatchewan boundary: {saskatchewan_shapefile}")
         
         try:
             # Define Warp options for clipping - use -99 as NoData
             warp_options = gdal.WarpOptions(
                 format="GTiff",
-                cutlineDSName=alberta_shapefile,
+                cutlineDSName=saskatchewan_shapefile,
                 cropToCutline=True,
                 dstNodata=-99,  # Set -99 as NoData for outside boundary
                 resampleAlg='near',
@@ -548,8 +411,8 @@ def save_classification_results_with_gdal(classified_scene,
             
             print(f"\n  Statistics after clipping:")
             print(f"    Total pixels: {total_pixels:,}")
-            print(f"    NoData (outside Alberta): {nodata_pixels:,} ({nodata_pixels/total_pixels*100:.1f}%)")
-            print(f"    Classified (inside Alberta): {classified_pixels:,} ({classified_pixels/total_pixels*100:.1f}%)")
+            print(f"    NoData (outside Saskatchewan): {nodata_pixels:,} ({nodata_pixels/total_pixels*100:.1f}%)")
+            print(f"    Classified (inside Saskatchewan): {classified_pixels:,} ({classified_pixels/total_pixels*100:.1f}%)")
             
             for class_id in sorted(unique_classes):
                 if class_id == -99:
@@ -616,7 +479,7 @@ def save_classification_results_with_gdal(classified_scene,
     # Create and set colormap
     colors = gdal.ColorTable()
     
-    # Class 255: No Data / Outside Alberta (black)
+    # Class 255: No Data / Outside Saskatchewan (black)
     colors.SetColorEntry(255, (0, 0, 0, 255))
     
     # Set colors for all Canada classes (1-19)
@@ -635,8 +498,8 @@ def save_classification_results_with_gdal(classified_scene,
     # Set category names - ONLY class names, no extra info
     category_names = []
     
-    # Class 255: No Data / Outside Alberta
-    category_names.append("255:0:0:0:255:Outside Alberta")
+    # Class 255: No Data / Outside Saskatchewan
+    category_names.append("255:0:0:0:255:Outside Saskatchewan")
     
     # Add entries for all Canada classes (1-19)
     for class_id in range(1, 20):
@@ -653,7 +516,7 @@ def save_classification_results_with_gdal(classified_scene,
     
     # Set dataset metadata
     ds_byte.SetMetadataItem('TIFFTAG_SOFTWARE', 'AlphaEarth Classification')
-    ds_byte.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover Classification - Alberta')
+    ds_byte.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover Classification - Saskatchewan')
     ds_byte.SetMetadataItem('TIFFTAG_DATETIME', datetime.now().strftime('%Y:%m:%d %H:%M:%S'))
     
     # Build overviews
@@ -667,118 +530,118 @@ def save_classification_results_with_gdal(classified_scene,
     
     print(f"✓ Final label map saved: {label_path}")
     print(f"  Added color table with class names only")
-    print(f"  Outside Alberta: -99 -> 255 (black)")
-    print(f"  {'CLIPPED to Alberta boundary' if is_clipped else 'UNCLIPPED (boundary file not found)'}")
+    print(f"  Outside Saskatchewan: -99 -> 255 (black)")
+    print(f"  {'CLIPPED to Saskatchewan boundary' if is_clipped else 'UNCLIPPED (boundary file not found)'}")
     
     # ==================== CREATE RGB VISUALIZATION ====================
-    print(f"\nCreating RGB visualization...")
+    # print(f"\nCreating RGB visualization...")
     
-    rgb_path = output_dir / f"{scene_name}_rgb_{timestamp}.tif"
+    # rgb_path = output_dir / f"{scene_name}_rgb_{timestamp}.tif"
     
-    # Open the label file to read data for RGB
-    ds_label = gdal.Open(str(label_path))
-    rgb_data = ds_label.GetRasterBand(1).ReadAsArray()
-    H_rgb, W_rgb = rgb_data.shape
+    # # Open the label file to read data for RGB
+    # ds_label = gdal.Open(str(label_path))
+    # rgb_data = ds_label.GetRasterBand(1).ReadAsArray()
+    # H_rgb, W_rgb = rgb_data.shape
     
-    rgb_array = np.zeros((H_rgb, W_rgb, 3), dtype=np.uint8)
+    # rgb_array = np.zeros((H_rgb, W_rgb, 3), dtype=np.uint8)
     
-    # Set colors for Canada classes (1-19)
-    for class_id in range(1, 20):
-        if class_id in CANADA_CLASS_DEFINITIONS:
-            mask = rgb_data == class_id
-            if mask.any():
-                rgb_array[mask] = CANADA_CLASS_DEFINITIONS[class_id]['color']
+    # # Set colors for Canada classes (1-19)
+    # for class_id in range(1, 20):
+    #     if class_id in CANADA_CLASS_DEFINITIONS:
+    #         mask = rgb_data == class_id
+    #         if mask.any():
+    #             rgb_array[mask] = CANADA_CLASS_DEFINITIONS[class_id]['color']
     
-    # Outside Alberta (255): black
-    outside_mask = rgb_data == 255
-    if outside_mask.any():
-        rgb_array[outside_mask] = (0, 0, 0)
+    # # Outside Saskatchewan (255): black
+    # outside_mask = rgb_data == 255
+    # if outside_mask.any():
+    #     rgb_array[outside_mask] = (0, 0, 0)
     
-    ds_label = None
+    # ds_label = None
     
-    # Save RGB file
-    ds_rgb = driver.Create(str(rgb_path), W_rgb, H_rgb, 3, gdal.GDT_Byte,
-                       options=['COMPRESS=LZW', 'PREDICTOR=2', 'TILED=YES', 
-                                'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
-                                'PHOTOMETRIC=RGB'])
+    # # Save RGB file
+    # ds_rgb = driver.Create(str(rgb_path), W_rgb, H_rgb, 3, gdal.GDT_Byte,
+    #                    options=['COMPRESS=LZW', 'PREDICTOR=2', 'TILED=YES', 
+    #                             'BLOCKXSIZE=256', 'BLOCKYSIZE=256',
+    #                             'PHOTOMETRIC=RGB'])
     
-    # Get geotransform from label file
-    ds_label = gdal.Open(str(label_path))
-    gt = ds_label.GetGeoTransform()
-    proj = ds_label.GetProjection()
-    ds_label = None
+    # # Get geotransform from label file
+    # ds_label = gdal.Open(str(label_path))
+    # gt = ds_label.GetGeoTransform()
+    # proj = ds_label.GetProjection()
+    # ds_label = None
     
-    ds_rgb.SetGeoTransform(gt)
-    ds_rgb.SetProjection(proj)
+    # ds_rgb.SetGeoTransform(gt)
+    # ds_rgb.SetProjection(proj)
     
-    for i in range(3):
-        band = ds_rgb.GetRasterBand(i + 1)
-        band.WriteArray(rgb_array[:, :, i])
-        if i == 0:
-            band.SetDescription("Red")
-            band.SetColorInterpretation(gdal.GCI_RedBand)
-        elif i == 1:
-            band.SetDescription("Green")
-            band.SetColorInterpretation(gdal.GCI_GreenBand)
-        elif i == 2:
-            band.SetDescription("Blue")
-            band.SetColorInterpretation(gdal.GCI_BlueBand)
+    # for i in range(3):
+    #     band = ds_rgb.GetRasterBand(i + 1)
+    #     band.WriteArray(rgb_array[:, :, i])
+    #     if i == 0:
+    #         band.SetDescription("Red")
+    #         band.SetColorInterpretation(gdal.GCI_RedBand)
+    #     elif i == 1:
+    #         band.SetDescription("Green")
+    #         band.SetColorInterpretation(gdal.GCI_GreenBand)
+    #     elif i == 2:
+    #         band.SetDescription("Blue")
+    #         band.SetColorInterpretation(gdal.GCI_BlueBand)
     
-    ds_rgb.SetMetadataItem('TIFFTAG_SOFTWARE', 'Classification')
-    ds_rgb.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover - RGB Visualization')
+    # ds_rgb.SetMetadataItem('TIFFTAG_SOFTWARE', 'Classification')
+    # ds_rgb.SetMetadataItem('TIFFTAG_IMAGEDESCRIPTION', '2020 Canada Land Cover - RGB Visualization')
     
-    ds_rgb.BuildOverviews("AVERAGE", [2, 4, 8, 16])
-    ds_rgb = None
+    # ds_rgb.BuildOverviews("AVERAGE", [2, 4, 8, 16])
+    # ds_rgb = None
     
-    print(f"✓ RGB visualization saved: {rgb_path}")
+    # print(f"✓ RGB visualization saved: {rgb_path}")
     
-    # ==================== CREATE QGIS STYLE FILE ====================
-    print(f"\nCreating QGIS style file...")
+#     # ==================== CREATE QGIS STYLE FILE ====================
+#     print(f"\nCreating QGIS style file...")
     
-    qml_path = label_path.with_suffix('.qml')
+#     qml_path = label_path.with_suffix('.qml')
     
-    qml_content = '''<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.28.0-Firenze" styleCategories="Symbology">
-  <pipe>
-    <rasterrenderer opacity="1" alphaBand="-1" classificationMax="19" classificationMin="1" type="paletted" band="1">
-      <rasterTransparency/>
-      <minMaxOrigin>
-        <limits>None</limits>
-        <extent>WholeRaster</extent>
-        <statAccuracy>Estimated</statAccuracy>
-        <cumulativeCutLower>0.02</cumulativeCutLower>
-        <cumulativeCutUpper>0.98</cumulativeCutUpper>
-        <stdDevFactor>2</stdDevFactor>
-      </minMaxOrigin>
-      <colorPalette>
-'''
+#     qml_content = '''<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+# <qgis version="3.28.0-Firenze" styleCategories="Symbology">
+#   <pipe>
+#     <rasterrenderer opacity="1" alphaBand="-1" classificationMax="19" classificationMin="1" type="paletted" band="1">
+#       <rasterTransparency/>
+#       <minMaxOrigin>
+#         <limits>None</limits>
+#         <extent>WholeRaster</extent>
+#         <statAccuracy>Estimated</statAccuracy>
+#         <cumulativeCutLower>0.02</cumulativeCutLower>
+#         <cumulativeCutUpper>0.98</cumulativeCutUpper>
+#         <stdDevFactor>2</stdDevFactor>
+#       </minMaxOrigin>
+#       <colorPalette>
+# '''
     
-    # Class 255: Outside Alberta (black)
-    qml_content += '        <paletteEntry value="255" color="#000000" label="Outside Alberta" alpha="255"/>\n'
+#     # Class 255: Outside Saskatchewan (black)
+#     qml_content += '        <paletteEntry value="255" color="#000000" label="Outside Saskatchewan" alpha="255"/>\n'
     
-    # Add palette entries for Alberta Canada classes
-    for class_id in ALBERTA_CANADA_CLASSES:
-        color = CANADA_CLASS_DEFINITIONS[class_id]['color']
-        name = CANADA_CLASS_DEFINITIONS[class_id]['name']
-        r, g, b = color
-        qml_content += f'        <paletteEntry value="{class_id}" color="#{r:02x}{g:02x}{b:02x}" label="{name}" alpha="255"/>\n'
+#     # Add palette entries for Saskatchewan Canada classes
+#     for class_id in ALBERTA_CANADA_CLASSES:
+#         color = CANADA_CLASS_DEFINITIONS[class_id]['color']
+#         name = CANADA_CLASS_DEFINITIONS[class_id]['name']
+#         r, g, b = color
+#         qml_content += f'        <paletteEntry value="{class_id}" color="#{r:02x}{g:02x}{b:02x}" label="{name}" alpha="255"/>\n'
     
-    qml_content += '''      </colorPalette>
-    </rasterrenderer>
-    <brightnesscontrast brightness="0" contrast="0" gamma="1"/>
-    <huesaturation colorizeGreen="128" colorizeOn="0" colorizeRed="255" colorizeBlue="128" grayscaleMode="0" saturation="0" colorizeStrength="100"/>
-    <rasterresampler maxOversampling="2"/>
-  </pipe>
-  <blendMode>0</blendMode>
-</qgis>'''
+#     qml_content += '''      </colorPalette>
+#     </rasterrenderer>
+#     <brightnesscontrast brightness="0" contrast="0" gamma="1"/>
+#     <huesaturation colorizeGreen="128" colorizeOn="0" colorizeRed="255" colorizeBlue="128" grayscaleMode="0" saturation="0" colorizeStrength="100"/>
+#     <rasterresampler maxOversampling="2"/>
+#   </pipe>
+#   <blendMode>0</blendMode>
+# </qgis>'''
     
-    with open(qml_path, 'w') as f:
-        f.write(qml_content)
+#     with open(qml_path, 'w') as f:
+#         f.write(qml_content)
     
-    print(f"✓ QGIS style file created: {qml_path}")
-    print(f"  Legend will show only class names")
+#     print(f"✓ QGIS style file created: {qml_path}")
+#     print(f"  Legend will show only class names")
     
-    return label_path, rgb_path
+#     return label_path, rgb_path
 
 def classify_full_scene(
     scene_path,
@@ -812,14 +675,14 @@ def classify_full_scene(
     """
     
     if device is None:
-        device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda: 1" if torch.cuda.is_available() else "cpu")
     
     print(f"Device: {device}")
     print(f"Loading scene: {scene_path}")
     print(f"Experiment directory: {experiment_dir}")
     
     # Create classified_scenes subdirectory in experiment folder
-    output_dir = Path(experiment_dir) / "classified_scenes"
+    output_dir = Path(experiment_dir) / "classified_scenes_saskatchewan"
     output_dir.mkdir(exist_ok=True)
     
     # Generate output filename
@@ -924,7 +787,7 @@ def classify_full_scene(
                               mode='reflect')
             
             # Normalize: UInt8 → [0, 1]
-            # patch = patch.astype(np.float32) / 255.0
+            patch = patch.astype(np.float32) / 255.0
             
             patches.append(patch)
             coords.append((r, c, ph, pw))
@@ -1307,8 +1170,6 @@ def main():
     print(f"\n{'='*60}")
     print("All processing completed!")
     print(f"{'='*60}")
-    end = time.time()
-    print(f"Total execution time: {(end - start)/60:.2f} minutes")
+
 if __name__ == '__main__':
     main()
-

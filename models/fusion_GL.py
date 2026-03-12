@@ -32,6 +32,62 @@ from .feature_fusion import FeatureFusion
 # --- Semantic Segmentation Decoder ---
 # Helper Block for the Decoder
 
+class RMSNorm(nn.Module):
+    """
+    Root Mean Square Normalization (RMSNorm) layer.
+    
+    RMSNorm is a simplified normalization technique that normalizes inputs using 
+    the root mean square statistic instead of mean and variance like LayerNorm.
+    
+    The normalization is computed as:
+        y = (x / RMS(x)) * weight
+    where RMS(x) = sqrt(mean(x^2) + epsilon)
+    
+    Advantages over LayerNorm:
+    - Computationally cheaper (no mean subtraction)
+    - More stable for certain activations (e.g., ReLU)
+    - Often performs comparably to LayerNorm in practice
+    
+    Args:
+        dim (int): Dimensionality of the input features to normalize.
+        eps (float, optional): Small epsilon value for numerical stability.
+                               Prevents division by zero. Default: 1e-6.
+    
+    Attributes:
+        eps (float): Epsilon value for numerical stability.
+        weight (nn.Parameter): Learnable scaling parameter of shape (dim,).
+    
+    Note:
+        - Unlike LayerNorm, RMSNorm does not have a bias term.
+        - Normalization is applied along the last dimension.
+        - The weight parameter is initialized to ones.
+    """
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass for RMS normalization.
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape (*, dim).
+        
+        Returns:
+            torch.Tensor: Normalized tensor of same shape as input.
+            
+        Note:
+            - Computes RMS along the last dimension.
+            - Applies learnable scaling after normalization.
+            - The operation is differentiable.
+        """
+        # Calculate the root mean square for each sample
+        # rsqrt computes 1/sqrt(value) for efficiency
+        norm = (x.pow(2).mean(-1, keepdim=True) + self.eps).rsqrt()
+        return x * (self.weight * norm)
+    
+
 def batched_index_select(input, dim, index):
     for ii in range(1, len(input.shape)):
         if ii != dim:
@@ -250,6 +306,7 @@ class Global_superxiel_model(nn.Module):
             )
 
     def forward(self, x, segments, assignment_matrix_, target_num=600): #target_num= num of superpixels
+        
         B, C, H, W = x.shape
         features, _ = self.stem(x)
         Local_feat, local_map = self.stem2(features)
@@ -349,5 +406,6 @@ class Global_superxiel_model(nn.Module):
         '''
 
 
-        return local_map, global_map, Gl_map, Lg_map, voting_map
+        # return local_map, global_map, Gl_map, Lg_map, voting_map # Original
+        return voting_map
 

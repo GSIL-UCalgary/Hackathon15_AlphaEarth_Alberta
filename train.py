@@ -4,6 +4,7 @@ Supports multiple models with comprehensive metrics and Weights & Biases logging
 """
 
 import os
+# os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -21,6 +22,8 @@ import argparse
 import yaml
 import platform
 import rasterio
+import time 
+import pdb
 # Import your models
 from models import (
     MIMUNet,
@@ -35,10 +38,15 @@ from models import (
     SSRNForSegmentation,
     ConvNeXtForSegmentation, 
     Global_superxiel_model,
-    VisionTransformerForSegmentation,
+    SimpleViTSegmentation,
     ImageHyperConnectionTransformer,
-    ImageHyperConnectionTransformer_spec_spa
+    ImageHyperConnectionTransformer_spec_spa,
+    ImageHyperConnectionTransformer_mhc,
+    MambaHSI, # ClusterMamba_aboundance
+    ParallelGraphMHCSegNet
 )
+
+start= time.time()
 # Enable memory optimization
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -131,14 +139,13 @@ def setup_wandb_api_key(api_key_path=None, force_login=False):
 # Setup WandB API key at the start
 setup_wandb_api_key()
 
-
 class MultisensorDataset(Dataset):
     """Dataset for multi-sensor semantic segmentation"""
     
     def __init__(self, root_dir, sensor_name, split='train', label_type='filtered', transform=None):
         """
         Args:
-            root_dir: Root directory with patches
+            root_dir: Root directory with patches (e.g., "./train_val_test_patches_128x128_purity_threshold_0.3_v2")
             sensor_name: Name of sensor ('landsat8', 'sentinel2', 'alphaearth')
             split: 'train', 'val', or 'test'
             label_type: 'filtered' or 'unfiltered'
@@ -147,15 +154,25 @@ class MultisensorDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.sensor_name = sensor_name
         self.split = split
+        self.label_type = label_type
         self.transform = transform
         
-        # Paths
-        self.img_dir = self.root_dir / split / sensor_name / 'img'
-        self.label_dir = self.root_dir / split / 'labels' / label_type
+        # CORRECT PATHS based on your structure:
+        # Images: root_dir/patches/split/label_type/sensor_name/img/
+        # Labels: root_dir/patches/split/label_type/labels/label_type/
+        
+        self.img_dir = self.root_dir /  split / label_type / sensor_name / 'img'
+        self.label_dir = self.root_dir /  split / label_type / 'labels' / label_type
+        
+        print(f"Looking for images in: {self.img_dir}")
+        print(f"Looking for labels in: {self.label_dir}")
         
         # Get all patch files
         self.img_files = sorted(list(self.img_dir.glob('*.tif')))
         self.label_files = sorted(list(self.label_dir.glob('*.tif')))
+        
+        print(f"Found {len(self.img_files)} image files")
+        print(f"Found {len(self.label_files)} label files")
         
         # Verify matching files
         assert len(self.img_files) == len(self.label_files), \
@@ -176,7 +193,7 @@ class MultisensorDataset(Dataset):
         with rasterio.open(img_path) as src:
             image = src.read()  # Shape: (C, H, W)
         # This assumes your UInt8 data is scaled from original values to 0-255
-        image = image.astype(np.float32) / 255.0
+        image = image.astype(np.uint8)
 
         with rasterio.open(label_path) as src:
             label = src.read(1)  # Shape: (H, W)
@@ -279,10 +296,10 @@ class SegmentationMetrics:
         self.confusion_matrix = np.zeros((self.num_classes, self.num_classes))
 
 
-def create_model(model_name, sensor_name, config):
+def create_model(model_name, sensor_name, dataset_config, training_config):
     """Create model based on name and sensor configuration"""
     print(f"The {model_name} model is being trained using {sensor_name} dataset")
-
+    print(f"training_config ['hidden_dim']: {training_config ['hidden_dim']}")
     # --------------------------------------------------
     # Input channels per sensor
     # --------------------------------------------------
@@ -296,32 +313,135 @@ def create_model(model_name, sensor_name, config):
     num_classes = 13  # fixed from your setup
 
     # --------------------------------------------------
+    # Physical mHC Mamba
+    # --------------------------------------------------
+    if model_name == 'physical_mhc_mamba':
+        # Define all hardcoded values here
+        image_size = 224
+        patch_size = 4
+        depth = 4
+        num_heads = 4
+        mlp_ratio = 4.0
+        dropout = 0.1
+        n_layers = 4
+        n_heads = 4 
+        rate = 4 
+        mask_ratio= 0.0
+        dynamic = True
+        embed_dim = training_config.get('hidden_dim', 384)
+        print(f"physical_mhc_mamba config - n_layers: {n_layers}, embed_dim: {embed_dim}")
+        # Store them in hyperparameters dict
+        model_hyperparameters = {
+            'physical_mhc_mamba_img_size': image_size,
+            'physical_mhc_mamba_patch_size': patch_size,
+            'physical_mhc_mamba_depth': depth,
+            'physical_mhc_mamba_num_heads': num_heads,
+            'physical_mhc_mamba_mlp_ratio': mlp_ratio,
+            'physical_mhc_mamba_n_layers': n_layers,
+            'physical_mhc_mamba_n_heads': n_heads,
+            'physical_mhc_mamba_rate': rate,
+            'physical_mhc_mamba_mask_ratio': mask_ratio,
+            'physical_mhc_mamba_dynamic': dynamic,
+            'physical_mhc_mamba_dropout': dropout,
+            'physical_mhc_mamba_embed_dim': embed_dim
+        }
+
+        model = ImageHyperConnectionTransformer_mhc(
+        image_size=image_size,
+        patch_size=patch_size,
+        in_channels=input_channels,
+        num_classes=num_classes,
+        dim=embed_dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        rate=rate,
+        dropout=dropout,
+        mask_ratio=mask_ratio,
+        dynamic=dynamic,
+        sensor_name=sensor_name
+                 )
+        return model, model_hyperparameters
+    # --------------------------------------------------
+    # Parallel Graph-mHC SegNet
+    # --------------------------------------------------
+    elif model_name == 'ParallelGraphMHCSegNet':
+        # Store them in hyperparameters dict
+        image_size = 224
+        in_channels=input_channels
+        stem_dim=training_config.get('hidden_dim', 64)
+        num_classes=num_classes
+        mhc_block_dims=[64, 128, 256]
+        mamba_blocks_per_stage=[2, 4, 6]
+        patch_gcn_dims=[128, stem_dim]
+        spatial_gcn_dims=[128, stem_dim]
+        sigma=1.0
+        spatial_stride=8
+        knn_k=10
+        fusion_strategy='cat'
+        fusion_out_dim=256
+        seg_head_dims=[128, 64]
+        model_hyperparameters = {
+            'ParallelGraphMHCSegNet_img_size': image_size,
+            'ParallelGraphMHCSegNet_in_channels': in_channels,
+            'ParallelGraphMHCSegNet_stem_dim': stem_dim,
+            'ParallelGraphMHCSegNet_num_classes': num_classes,
+            'ParallelGraphMHCSegNet_mhc_block_dims': mhc_block_dims,
+            'ParallelGraphMHCSegNet_mamba_blocks_per_stage': mamba_blocks_per_stage,
+            'ParallelGraphMHCSegNet_patch_gcn_dims': patch_gcn_dims,
+            'ParallelGraphMHCSegNet_spatial_gcn_dims': spatial_gcn_dims,
+            'ParallelGraphMHCSegNet_sigma': sigma,
+            'ParallelGraphMHCSegNet_spatial_stride': spatial_stride,
+            'ParallelGraphMHCSegNet_knn_k': knn_k,
+            'ParallelGraphMHCSegNet_fusion_strategy': fusion_strategy,
+            'ParallelGraphMHCSegNet_fusion_out_dim': fusion_out_dim,
+            'ParallelGraphMHCSegNet_seg_head_dims': seg_head_dims
+        }
+
+        model = ParallelGraphMHCSegNet(
+            in_channels=in_channels,
+            stem_dim=stem_dim,
+            num_classes=num_classes,
+            mhc_block_dims=mhc_block_dims,
+            mamba_blocks_per_stage=mamba_blocks_per_stage,
+            patch_gcn_dims=patch_gcn_dims,
+            spatial_gcn_dims=spatial_gcn_dims,
+            sigma=sigma,
+            spatial_stride=spatial_stride,
+            knn_k=knn_k,
+            fusion_strategy=fusion_strategy,
+            fusion_out_dim=fusion_out_dim,
+            seg_head_dims=seg_head_dims,
+        )
+
+        return model, model_hyperparameters
+    # --------------------------------------------------
+    # Cluster_MambaHSI
+    # --------------------------------------------------
+
+    elif model_name == 'Cluster_MambaHSI':
+        print(f"input_channels: {input_channels}")
+        return MambaHSI(in_channels=input_channels,
+                        hidden_dim=64,
+                        num_classes=num_classes, 
+                        use_residual=True,
+                        mamba_type='both',
+                        token_num=4,
+                        group_num=4,
+                        use_att=True,
+                        num_clusters=20*3,
+                        sparsity_ratio=1.0,
+                        attention_heads=4,
+                        selection_mode='cluster')
+ 
+    # --------------------------------------------------
     # HRNet
     # --------------------------------------------------
-    if model_name == 'HRNet':
+    elif model_name == 'HRNet':
         hrnet_config = {
             'in_channels': input_channels,
             'num_classes': num_classes
         }
         return HRNetWrapper(hrnet_config)
-    # --------------------------------------------------
-    # mHC_cluster
-    # --------------------------------------------------
-    elif model_name == 'mHC_cluster':
-        return ImageHyperConnectionTransformer(
-        image_size=224,
-        patch_size=1,
-        in_channels=input_channels,
-        num_classes=num_classes,
-        dim=32,
-        n_layers=2,
-        n_heads=2,
-        rate=4,
-        dropout=0.3,
-        drop_path=0.0,
-        mask_ratio=0.0,
-        dynamic=True
-    )
 
     # --------------------------------------------------
     # mHC_spec_spa_mamba
@@ -341,6 +461,7 @@ def create_model(model_name, sensor_name, config):
         mask_ratio=0.0,
         dynamic=True
     )
+
     # --------------------------------------------------
     # SSRN
     # --------------------------------------------------
@@ -367,31 +488,53 @@ def create_model(model_name, sensor_name, config):
         }
         return ConvNeXtForSegmentation(**convnext_config)
     # --------------------------------------------------
-    # OBIA Mamba
+    # OBIA Mamba  
     # --------------------------------------------------
     elif model_name == 'OBIA_Mamba':
         return Global_superxiel_model(num_classes=num_classes, 
                                       num_superpixel=500, 
                                       dim=64, 
                                       d_conv=6, 
-                                      in_channels=input_channels,
+                                      in_channel=input_channels,
         )
     # --------------------------------------------------
     # ViT
     # --------------------------------------------------
-    elif model_name == 'ViT':
+    if model_name == 'ViT':
+        # Define all hardcoded values here
+        vit_img_size = 224
+        vit_patch_size = 7
+        vit_depth = 3
+        vit_num_heads = 4
+        vit_mlp_ratio = 4.0
+        vit_dropout = 0.1
+        vit_embed_dim = training_config.get('hidden_dim', 384)
+
+        # Store them in hyperparameters dict
+        model_hyperparameters = {
+            'vit_img_size': vit_img_size,
+            'vit_patch_size': vit_patch_size,
+            'vit_depth': vit_depth,
+            'vit_num_heads': vit_num_heads,
+            'vit_mlp_ratio': vit_mlp_ratio,
+            'vit_dropout': vit_dropout,
+            'vit_embed_dim': vit_embed_dim
+        }
+
+
         vit_config = {
-            'img_size': 224,
-            'patch_size': 16,
+            'img_size': vit_img_size,
             'in_chans': input_channels,
-            'embed_dim': 768,
-            'depth': 12,
-            'num_heads': 12,
-            'mlp_ratio': 4.0,
-            'dropout': 0.1,
+            'embed_dim': vit_embed_dim,
+            'patch_size': vit_patch_size,
+            'depth': vit_depth,
+            'num_heads': vit_num_heads,
+            'mlp_ratio': vit_mlp_ratio,
+            'dropout': vit_dropout,
             'num_classes': num_classes
         }
-        return VisionTransformerForSegmentation(**vit_config)
+        model = SimpleViTSegmentation(**vit_config)
+        return model, model_hyperparameters
     # --------------------------------------------------
     # MambaHSISeg 
     # --------------------------------------------------
@@ -399,11 +542,11 @@ def create_model(model_name, sensor_name, config):
         mamba_config = {
             'in_channels': input_channels,
             'num_classes': num_classes,
-            'base_dim': 32,           # c1 dimension
+            'base_dim': 64,           # c1 dimension
             'mamba_type': 'both',     # 'spa', 'spe', or 'both'
-            'token_num': 4,           # for SpeMamba
+            'token_num': 16,           # for SpeMamba
             'use_residual': True,
-            'group_num': 4,
+            'group_num': 16,
             'use_att': True,          # attention fusion for BothMamba
             'use_stem': True          # whether to use initial downsampling
         }
@@ -416,8 +559,8 @@ def create_model(model_name, sensor_name, config):
             'img_size': 224,
             'in_channels': input_channels,
             'num_classes': num_classes,
-            'embed_dim': 32,
-            'depths': [2, 2, 6, 2],
+            'embed_dim': 96,
+            'depths': [1, 1, 2,1],
             'heads': [1, 2, 4, 8],
             'patch_size': 4,
             'window_size': 7
@@ -457,6 +600,105 @@ def create_model(model_name, sensor_name, config):
         raise ValueError(f"Unknown model: {model_name}")
 
 
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import ListedColormap, BoundaryNorm
+
+def plot_rgb_label_prediction(image_64band, label_map, pred_map, 
+                              save_path=None, figsize=(18, 6)):
+    """
+    Plot RGB image (first 3 bands), ground truth label, and prediction side by side
+    
+    Args:
+        image_64band: numpy array of shape (H, W, 64) or (64, H, W) - hyperspectral image
+        label_map: numpy array of shape (H, W) with values -99, 0, 1, ..., 12
+        pred_map: numpy array of shape (H, W) with predicted class values
+        save_path: optional path to save the figure
+        figsize: figure size tuple
+    """
+    CLASS_DEFINITIONS = {
+        -99: {'name': 'Background', 'color': (0, 0, 0)},
+        0: {'name': 'Temperate needleleaf forest', 'color': (0, 61, 0)},
+        1: {'name': 'Sub-polar taiga forest', 'color': (148, 156, 112)},
+        2: {'name': 'Temperate broadleaf forest', 'color': (20, 140, 61)},
+        3: {'name': 'Mixed forest', 'color': (91, 117, 43)},
+        4: {'name': 'Temperate shrubland', 'color': (179, 138, 51)},
+        5: {'name': 'Temperate grassland', 'color': (225, 207, 138)},
+        6: {'name': 'Polar grassland-lichen', 'color': (186, 212, 143)},
+        7: {'name': 'Wetland', 'color': (107, 163, 138)},
+        8: {'name': 'Cropland', 'color': (230, 174, 102)},
+        9: {'name': 'Barren lands', 'color': (168, 171, 174)},
+        10: {'name': 'Urban', 'color': (220, 33, 38)},
+        11: {'name': 'Water', 'color': (76, 112, 163)},
+        12: {'name': 'Snow/ice', 'color': (255, 250, 255)}
+    }
+    
+    # Handle image dimension (channels first or last)
+    
+    
+    # Extract first 3 bands for RGB visualization
+    rgb_image = image_64band[:3, :, :].transpose(1, 2, 0)
+    
+    # Normalize RGB image for better visualization (per channel)
+    rgb_normalized = np.zeros_like(rgb_image)
+    for i in range(3):
+        channel = rgb_image[:, :, i]
+        vmin, vmax = np.percentile(channel[channel > 0], (2, 98))  # Use 2-98 percentile to avoid outliers
+        rgb_normalized[:, :, i] = np.clip((channel - vmin) / (vmax - vmin + 1e-8), 0, 1)
+    
+    # Prepare colormap for labels
+    class_values = sorted(CLASS_DEFINITIONS.keys())
+    colors_rgb = [[c/255.0 for c in CLASS_DEFINITIONS[v]['color']] for v in class_values]
+    cmap = ListedColormap(colors_rgb)
+    
+    # Create boundaries for labels
+    boundaries = []
+    for i, val in enumerate(class_values):
+        if i == 0:
+            boundaries.append(val - 0.5)
+        boundaries.append(val + 0.5)
+    norm = BoundaryNorm(boundaries, cmap.N)
+    
+    # Create figure with 3 subplots
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    
+    # 1. RGB Image (first 3 bands)
+    ax1 = axes[0]
+    im1 = ax1.imshow(rgb_normalized)
+    ax1.set_title('RGB Image (Bands 1-3)', fontsize=14, fontweight='bold')
+    ax1.axis('off')
+    
+    # 2. Ground Truth
+    ax2 = axes[1]
+    im2 = ax2.imshow(label_map, cmap=cmap, norm=norm, interpolation='none')
+    ax2.set_title('Ground Truth', fontsize=14, fontweight='bold')
+    ax2.axis('off')
+    
+    # 3. Prediction
+    ax3 = axes[2]
+    im3 = ax3.imshow(pred_map, cmap=cmap, norm=norm, interpolation='none')
+    ax3.set_title('Prediction', fontsize=14, fontweight='bold')
+    ax3.axis('off')
+    
+    # Add colorbar for the label maps (shared)
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])  # [left, bottom, width, height]
+    cbar = fig.colorbar(im2, cax=cbar_ax, ticks=class_values)
+    cbar.ax.set_yticklabels([CLASS_DEFINITIONS[v]['name'] for v in class_values], 
+                            fontsize=8)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.set_label('Land Cover Classes', fontsize=10)
+    
+    plt.suptitle('Hyperspectral Image Classification Results', fontsize=16, y=0.98)
+    plt.tight_layout(rect=[0, 0, 0.9, 1])  # Make room for colorbar
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+    
+    return fig, axes
+
 class Trainer:
     """Main training class with Config Saving"""
     
@@ -469,7 +711,7 @@ class Trainer:
         # Remove the scaler setup
         self.scaler = None  # Explicitly set to None
 
-        self.device = torch.device('cuda:1' if torch.cuda.device_count() > 1 else 'cpu')
+        self.device = torch.device('cuda:0' if torch.cuda.device_count() > 1 else 'cpu')
         print(f"Using device: {self.device}")
         
         # Get label type (default to 'filtered' if not specified)
@@ -477,7 +719,7 @@ class Trainer:
         
         # Create output directory with timestamp and label type
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{label_type}_{timestamp}"
+        self.output_dir = Path(config['output_dir']) / f"{config['model_name']}_{config['sensor_name']}_{label_type}_{timestamp}_{config['image_patch_size']}x{config['image_patch_size']}_v2"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.margin = 5
@@ -488,6 +730,24 @@ class Trainer:
         with open(config['dataset_config'], 'r') as f:
             self.dataset_config = json.load(f)
         
+        # ========== ADD VERIFICATION CODE HERE ==========
+        # Verify data root exists and has the correct structure
+        data_root = Path(self.config['data_root'])
+        label_type = self.config.get('label_type', 'filtered')
+        sensor_name = self.config['sensor_name']
+
+        print(f"\n🔍 Verifying dataset paths:")
+        test_path = data_root / 'train' / label_type / sensor_name / 'img'
+        print(f"  Should look for images in: {test_path}")
+        if test_path.exists():
+            print(f"  ✓ Path exists")
+            sample_files = list(test_path.glob('*.tif'))[:3]
+            if sample_files:
+                print(f"  ✓ Found sample files: {[f.name for f in sample_files]}")
+        else:
+            print(f"  ✗ Path does not exist!")
+        # ========== END OF VERIFICATION CODE ==========
+
         # Save configuration files immediately
         self.save_configuration()
         
@@ -504,11 +764,17 @@ class Trainer:
             print(f"WandB Run: {wandb.run.url}")
         
         # Create model - now using your specific config
-        self.model = create_model(
+        # Create model - now returns both model and hyperparameters
+        self.model, model_hparams = create_model(
             config['model_name'],
             config['sensor_name'],
-            self.dataset_config
-        ).to(self.device)
+            dataset_config=self.dataset_config,
+            training_config=self.config
+        )
+        # Add model hyperparameters to config
+        self.config['model_hyperparameters'] = model_hparams
+        self.model = self.model.to(self.device)
+        
         
         # Print model summary
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -527,13 +793,6 @@ class Trainer:
                 ignore_index=config['ignore_index'],
                 weight=config.get('class_weights', None)
             )
-        elif config['loss_fn'] == 'focal':
-            try:
-                from focal_loss.focal_loss import FocalLoss
-                self.criterion = FocalLoss(ignore_index=config['ignore_index'])
-            except ImportError:
-                print("Warning: focal-loss-torch not installed. Using cross entropy instead.")
-                self.criterion = nn.CrossEntropyLoss(ignore_index=config['ignore_index'])
         else:
             raise ValueError(f"Unknown loss function: {config['loss_fn']}")
         
@@ -541,14 +800,14 @@ class Trainer:
         if config['optimizer'] == 'adam':
             self.optimizer = optim.Adam(
                 self.model.parameters(),
-                lr=config['learning_rate'],
-                weight_decay=config['weight_decay']
+                lr=config['learning_rate']
+                # weight_decay=config['weight_decay']
             )
         elif config['optimizer'] == 'adamw':
             self.optimizer = optim.AdamW(
                 self.model.parameters(),
-                lr=config['learning_rate'],
-                weight_decay=config['weight_decay']
+                lr=config['learning_rate']
+                # weight_decay=config['weight_decay']
             )
         elif config['optimizer'] == 'sgd':
             self.optimizer = optim.SGD(
@@ -559,44 +818,86 @@ class Trainer:
             )
         
         # Scheduler
+        warmup_epochs = config.get('warmup_epochs', 5)
+
         if config['scheduler'] == 'cosine':
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            base_scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=config['epochs']
+                T_max=config['epochs'] - warmup_epochs
             )
+            warmup_scheduler = optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=warmup_epochs
+            )
+            self.scheduler = optim.lr_scheduler.SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, base_scheduler],
+                milestones=[warmup_epochs]
+            )
+
         elif config['scheduler'] == 'reduce_on_plateau':
+            # No warmup for plateau — it's reactive and warmup would interfere
             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 mode='max',
                 factor=0.5,
                 patience=5,
             )
+
         elif config['scheduler'] == 'step':
-            self.scheduler = optim.lr_scheduler.StepLR(
+            base_scheduler = optim.lr_scheduler.StepLR(
                 self.optimizer,
                 step_size=20,
                 gamma=0.1
             )
+            warmup_scheduler = optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=warmup_epochs
+            )
+            self.scheduler = optim.lr_scheduler.SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, base_scheduler],
+                milestones=[warmup_epochs]
+            )
+
         else:
             self.scheduler = None
-        
+
         # Mixed precision training
         if config['use_amp']:
-            self.scaler = torch.amp.GradScaler('cuda')  # Updated API
+            self.scaler = torch.amp.GradScaler('cuda')
         else:
             self.scaler = None
         
-        # Get class names from your dataset config
-        class_names = []
-        if 'class_names' in self.dataset_config:
-            # Extract class names in order
-            class_names = [self.dataset_config['class_names'][str(i)] for i in range(self.dataset_config['num_classes'])]
+        # Get number of classes based on label type
+        label_type = self.config.get('label_type', 'filtered')
+        if label_type == 'filtered' and 'filtered_labels' in self.dataset_config:
+            num_classes = len(self.dataset_config['filtered_labels'])
+            # Get class names in the correct order for filtered labels
+            class_names = []
+            for label in self.dataset_config['filtered_labels']:
+                class_names.append(self.dataset_config['class_names'].get(str(label), f"Class_{label}"))
+        elif label_type == 'unfiltered' and 'unfiltered_labels' in self.dataset_config:
+            num_classes = len(self.dataset_config['unfiltered_labels'])
+            # Get class names in the correct order for unfiltered labels
+            class_names = []
+            for label in self.dataset_config['unfiltered_labels']:
+                class_names.append(self.dataset_config['class_names'].get(str(label), f"Class_{label}"))
         else:
-            class_names = [f"Class_{i}" for i in range(self.dataset_config['num_classes'])]
-        
-        # Metrics - using 13 classes from your config
+            # Fallback
+            num_classes = self.config.get('num_classes', 13)
+            class_names = [f"Class_{i}" for i in range(num_classes)]
+
+        print(f"Number of classes for {label_type} dataset: {num_classes}")
+        print(f"Class names: {class_names}")
+
+        # Metrics
         self.metrics = SegmentationMetrics(
-            num_classes=self.dataset_config['num_classes'],  # Should be 13
+            num_classes=num_classes,
             ignore_index=config['ignore_index'],
             class_names=class_names
         )
@@ -645,7 +946,19 @@ class Trainer:
         file_obj.write(f"Model Name: {self.config['model_name']}\n")
         file_obj.write(f"Sensor Name: {self.config['sensor_name']}\n")
         file_obj.write(f"Label Type: {self.config.get('label_type', 'filtered')}\n") 
-        file_obj.write(f"Number of Classes: {self.dataset_config['num_classes']}\n")
+        # Get number of classes from filtered_labels or unfiltered_labels
+        if hasattr(self, 'config') and 'label_type' in self.config:
+            label_type = self.config['label_type']
+            if label_type == 'filtered' and 'filtered_labels' in self.dataset_config:
+                num_classes = len(self.dataset_config['filtered_labels'])
+            elif label_type == 'unfiltered' and 'unfiltered_labels' in self.dataset_config:
+                num_classes = len(self.dataset_config['unfiltered_labels'])
+            else:
+                # Fallback
+                num_classes = 13
+        else:
+            num_classes = 13
+        file_obj.write(f"Number of Classes: {num_classes}\n")
         file_obj.write(f"Ignore Index: {self.config.get('ignore_index', -99)}\n")
         file_obj.write(f"Class Weights: {self.config.get('class_weights', 'None')}\n")
         
@@ -674,17 +987,38 @@ class Trainer:
         # Dataset information
         file_obj.write("DATASET INFORMATION\n")
         file_obj.write("-" * 40 + "\n")
-        file_obj.write(f"Number of Classes: {self.dataset_config['num_classes']}\n")
+        # Get number of classes from filtered_labels or unfiltered_labels
+        if 'filtered_labels' in self.dataset_config:
+            num_classes = len(self.dataset_config['filtered_labels'])
+        elif 'unfiltered_labels' in self.dataset_config:
+            num_classes = len(self.dataset_config['unfiltered_labels'])
+        elif 'num_classes' in self.dataset_config:
+            num_classes = self.dataset_config['num_classes']
+        else:
+            # Fallback to config value
+            num_classes = self.config.get('num_classes', 13)
+
+        file_obj.write(f"Number of Classes: {num_classes}\n")
         file_obj.write(f"Window Size: {self.dataset_config['window_size']}\n")
         file_obj.write(f"Background Label: {self.dataset_config['background_label']}\n")
         file_obj.write(f"Sensor Bands: {self.dataset_config['sensors'][self.config['sensor_name']]['bands']}\n")
         
         # List all classes
         file_obj.write("\nCLASS MAPPING:\n")
-        for i in range(self.dataset_config['num_classes']):
-            original_id = self.dataset_config['class_mapping'].get(str(i), i)
-            class_name = self.dataset_config['class_names'].get(str(i), f"Class_{i}")
-            file_obj.write(f"  Label {i} → Original {original_id} ({class_name})\n")
+        # Also fix the class mapping section to use the correct label list
+        label_type = self.config.get('label_type', 'filtered')
+        if label_type == 'filtered' and 'filtered_labels' in self.dataset_config:
+            labels = self.dataset_config['filtered_labels']
+        elif label_type == 'unfiltered' and 'unfiltered_labels' in self.dataset_config:
+            labels = self.dataset_config['unfiltered_labels']
+        else:
+            # Fallback - try to determine from class_names length
+            labels = list(range(len(self.dataset_config.get('class_names', {}))))
+
+        for i, label in enumerate(labels):
+            original_id = self.dataset_config['class_mapping'].get(str(label), label)
+            class_name = self.dataset_config['class_names'].get(str(label), f"Class_{label}")
+            file_obj.write(f"  Label {i} (new {label}) → Original {original_id} ({class_name})\n")
         file_obj.write("\n")
         
         # Dataset paths
@@ -735,45 +1069,37 @@ class Trainer:
         """Create train, val, and test dataloaders"""
         
         from torchvision import transforms
-        
-        # Data augmentation for training
-        # train_transform = transforms.Compose([
-        #     transforms.RandomHorizontalFlip(p=0.5),
-        #     transforms.RandomVerticalFlip(p=0.5),
-        #     transforms.RandomRotation(degrees=30),
-        # ])
-        
         # No augmentation for validation/test
         val_transform = None
 
         # Get label type from config
         label_type = self.config.get('label_type', 'filtered')
-
-        # Create datasets
+        print(f"\n📁 Loading {label_type.upper()} dataset from: {self.config['data_root']}")
+        print(f"batch size: {self.config['batch_size']}")
+        # Create datasets - paths are handled in MultisensorDataset
         train_dataset = MultisensorDataset(
-        root_dir=self.config['data_root'],
-        sensor_name=self.config['sensor_name'],
-        split='train',
-        label_type=label_type,
-        #transform=train_transform
+            root_dir=self.config['data_root'],
+            sensor_name=self.config['sensor_name'],
+            split='train',
+            label_type=label_type,
+            # transform=train_transform
         )
         
         val_dataset = MultisensorDataset(
-        root_dir=self.config['data_root'],
-        sensor_name=self.config['sensor_name'],
-        split='val',
-        label_type=label_type,
-        transform=val_transform
-        )
-    
-        test_dataset = MultisensorDataset(
-        root_dir=self.config['data_root'],
-        sensor_name=self.config['sensor_name'],
-        split='test',
-        label_type=label_type,
-        transform=val_transform
+            root_dir=self.config['data_root'],
+            sensor_name=self.config['sensor_name'],
+            split='val',
+            label_type=label_type,
+            transform=val_transform
         )
         
+        test_dataset = MultisensorDataset(
+            root_dir=self.config['data_root'],
+            sensor_name=self.config['sensor_name'],
+            split='test',
+            label_type=label_type,
+            transform=val_transform
+        )
         # Create dataloaders
         train_loader = DataLoader(
             train_dataset,
@@ -809,118 +1135,68 @@ class Trainer:
         self.metrics.reset()
         pbar = tqdm(train_loader, desc=f"Train Epoch {epoch}")
         
+        # Gradient accumulation settings
+        accumulation_steps = 4  # Adjust based on memory
+         # Zero gradients at the beginning
+        
         for batch_idx, (images, labels) in enumerate(pbar):
             images = images.to(self.device)
             labels = labels.to(self.device)                       
-            if self.split_image:
-                # Calculate split boundaries
-                B, C, H, W = images.shape
-                margin = self.margin
-                h_mid = H // 2
-                w_mid = W // 2
-                # Split image into 4 overlapping parts
-                parts = [
-                    (images[:, :, :h_mid + margin, :w_mid + margin],
-                    labels[:, :h_mid + margin, :w_mid + margin]),
-                    
-                    (images[:, :, :h_mid + margin, w_mid - margin:],
-                    labels[:, :h_mid + margin, w_mid - margin:]),
-                    
-                    (images[:, :, h_mid - margin:, :w_mid + margin],
-                    labels[:, h_mid - margin:, :w_mid + margin]),
-                    
-                    (images[:, :, h_mid - margin:, w_mid - margin:],
-                    labels[:, h_mid - margin:, w_mid - margin:])
-                ]
-                #print(f"Split into {len(parts)} parts for training.")
-                #print(f"Part 1 image shape: {parts[0][0].shape}, Part 1 label shape: {parts[0][1].shape}")
-                
-                # Gradient accumulation
-                self.optimizer.zero_grad()
-                total_batch_loss = 0
-                
-                for i, (img_part, lbl_part) in enumerate(parts):
-                    # Process one part at a time
-                    outputs = self.model(img_part)
-                    loss = self.criterion(outputs, lbl_part.long())
-                    
-                    # Scale loss for accumulation (divide by number of parts)
-                    scaled_loss = loss / len(parts)
-                    scaled_loss.backward()
-                    
-                    total_batch_loss += loss.item()
-                    
-                    # Clear intermediate activations
-                    del outputs, loss
-                    torch.cuda.empty_cache()
-                
-                # Single optimizer step after all parts
-                self.optimizer.step()
-                
-                # Calculate average loss for this batch
-                avg_loss = total_batch_loss / len(parts)
-                total_epoch_loss += avg_loss
-                
-                # For metrics, use the last part's predictions (same as your original)
-                with torch.no_grad():
-                    last_outputs = self.model(parts[-1][0])
-                    preds = last_outputs.argmax(dim=1)
-                    self.metrics.update(preds, parts[-1][1])
-                
-                pbar.set_postfix({'loss': avg_loss})
-                
-            else:
-                # Original full-image training (unchanged)
-                self.optimizer.zero_grad()
-                outputs = self.model(images)
-                loss = self.criterion(outputs, labels.long())
-                #print(f"outputs shape: {outputs.shape}, labels shape: {labels.shape}, loss: {loss.item()}")
-                loss.backward()
-                self.optimizer.step()
-                
-                preds = outputs.argmax(dim=1)
-                avg_loss = loss.item()
-                total_epoch_loss += avg_loss
-                
-                # Update metrics
-                self.metrics.update(preds, labels)
-                
-                pbar.set_postfix({'loss': avg_loss})
             
-            # ✅ EXACT SAME wandb logging as your original code
+            # For other models
+            # outputs, loss2 = self.model(images)
+            outputs = self.model(images)
+            loss = self.criterion(outputs, labels.long()) 
+
+            total_loss = loss
+
+            # Normalize loss for gradient accumulation
+            total_loss = total_loss
+            
+            # Backward pass
+
+            self.optimizer.zero_grad() 
+            total_loss.backward()
+            self.optimizer.step()
+
+
+            
+            # For logging, use the original loss value (before normalization)
+            avg_loss = loss.item()  # This is the classification loss
+            total_epoch_loss += avg_loss
+            
+            # Calculate predictions
+            preds = outputs.argmax(dim=1)
+            #plot_rgb_label_prediction(images.cpu().numpy()[0], labels.cpu().numpy()[0, :, :], preds.cpu().numpy()[0, :, :], 'label1.png')
+            # Update metrics
+            self.metrics.update(preds, labels)
+            
+            # Update progress bar
+            pbar.set_postfix({'loss': avg_loss})
+            
             # Log batch metrics to wandb
-            # if self.config['use_wandb'] and batch_idx % 10 == 0:
-            #     step = epoch * len(train_loader) + batch_idx
-            #     wandb.log({
-            #         'train/batch_loss': avg_loss,
-            #         'train/learning_rate': self.optimizer.param_groups[0]['lr'],
-            #         'step': step
-            #     })
-        
-            """ 
-            To have a constant step size for models with different batch sizes
-            """
-             # Log batch metrics to wandb
             if self.config['use_wandb'] and batch_idx % 10 == 0:
                 step = (
                     epoch * len(train_loader.dataset)
                     + batch_idx * train_loader.batch_size
                 )
 
-                wandb.log(
-                    {
-                        'train/batch_loss': avg_loss,
-                        'train/learning_rate': self.optimizer.param_groups[0]['lr'],
-                    },
-                    step=step
-                )
+                log_dict = {
+                    'train/batch_loss': avg_loss,
+                    'train/learning_rate': self.optimizer.param_groups[0]['lr'],
+                }
+                
+                wandb.log(log_dict, step=step)
+        
         # Compute metrics
         metrics = self.metrics.compute()
         metrics['loss'] = total_epoch_loss / len(train_loader)
         
-        # Log epoch metrics to wandb (also identical to your original)
+        
+        
+        # Log epoch metrics to wandb
         if self.config['use_wandb']:
-            wandb.log({
+            log_dict = {
                 'train/epoch_loss': metrics['loss'],
                 'train/mean_iou': metrics['mean_iou'],
                 'train/mean_f1': metrics['mean_f1'],
@@ -929,7 +1205,11 @@ class Trainer:
                 'train/mean_recall': metrics['mean_recall'],
                 'train/kappa': metrics['kappa'],
                 'epoch': epoch
-            })
+            }
+            
+        
+            
+            wandb.log(log_dict)
         
         return metrics
     
@@ -1037,6 +1317,7 @@ class Trainer:
                 pbar.set_postfix({'loss': loss.item()})
         
         # Compute metrics
+        plot_rgb_label_prediction(images.cpu().numpy()[0], labels.cpu().numpy()[0, :, :], preds.cpu().numpy()[0, :, :], 'val_vis1.png')
         metrics = self.metrics.compute()
         metrics['loss'] = total_loss / len(val_loader)
         
@@ -1063,57 +1344,65 @@ class Trainer:
         train_loader, val_loader, test_loader = self.create_dataloaders()
         
         print(f"\nStarting training for {self.config['model_name']} on {self.config['sensor_name']}")
-        print(f"Training samples: {len(train_loader.dataset)}")
+        print(f"Training samples:   {len(train_loader.dataset)}")
         print(f"Validation samples: {len(val_loader.dataset)}")
-        print(f"Test samples: {len(test_loader.dataset)}")
+        print(f"Test samples:       {len(test_loader.dataset)}")
         
-        # Training history for saving
+        # Training history
         history = {
             'train_loss': [], 'train_iou': [], 'train_accuracy': [],
-            'val_loss': [], 'val_iou': [], 'val_accuracy': [],
+            'val_loss':   [], 'val_iou':   [], 'val_accuracy':   [],
             'test_metrics': None
         }
         
-        # Training loop
+        # ------------------------------------------------------------------ #
+        #  Epoch loop                                                          #
+        # ------------------------------------------------------------------ #
         for epoch in range(1, self.config['epochs'] + 1):
             print(f"\n{'='*60}")
             print(f"Epoch {epoch}/{self.config['epochs']}")
             print(f"{'='*60}")
 
-            # Train
+            # ── Train ──────────────────────────────────────────────────────
             train_metrics = self.train_epoch(train_loader, epoch)
             print(f"Train - Loss: {train_metrics['loss']:.4f}, "
-                  f"mIoU: {train_metrics['mean_iou']:.4f}, "
-                  f"Acc: {train_metrics['overall_accuracy']:.4f}")
-            
-            # Validate
+                f"mIoU: {train_metrics['mean_iou']:.4f}, "
+                f"Acc: {train_metrics['overall_accuracy']:.4f}")
+
+            # ── Validate ───────────────────────────────────────────────────
             val_metrics = self.validate(val_loader, epoch, mode='val')
             print(f"Val   - Loss: {val_metrics['loss']:.4f}, "
-                  f"mIoU: {val_metrics['mean_iou']:.4f}, "
-                  f"Acc: {val_metrics['overall_accuracy']:.4f}")
-            
-            # Update scheduler
+                f"mIoU: {val_metrics['mean_iou']:.4f}, "
+                f"Acc: {val_metrics['overall_accuracy']:.4f}")
+
+            # ── Scheduler step ─────────────────────────────────────────────
             if self.scheduler:
                 if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_metrics['mean_iou'])
                 else:
                     self.scheduler.step()
-            
-            # Update history
+
+            # ── Log LR to wandb ────────────────────────────────────────────
+            if self.config['use_wandb']:
+                wandb.log({
+                    'train/learning_rate_epoch': self.optimizer.param_groups[0]['lr'],
+                    'epoch': epoch
+                })
+
+            # ── Update history ─────────────────────────────────────────────
             history['train_loss'].append(train_metrics['loss'])
             history['train_iou'].append(train_metrics['mean_iou'])
             history['train_accuracy'].append(train_metrics['overall_accuracy'])
             history['val_loss'].append(val_metrics['loss'])
             history['val_iou'].append(val_metrics['mean_iou'])
             history['val_accuracy'].append(val_metrics['overall_accuracy'])
-            
-            # Save best model
+
+            # ── Save best model ────────────────────────────────────────────
             if val_metrics['mean_iou'] > self.best_val_iou:
                 self.best_val_iou = val_metrics['mean_iou']
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
-                
-                # Save checkpoint
-                checkpoint_path = self.output_dir / f"best_model.pth"
+
+                best_path = self.output_dir / "best_model.pth"
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.best_model_state,
@@ -1122,20 +1411,19 @@ class Trainer:
                     'best_val_iou': self.best_val_iou,
                     'val_metrics': val_metrics,
                     'config': self.config
-                }, checkpoint_path)
-                print(f"✓ Saved best model (mIoU: {self.best_val_iou:.4f}) to {checkpoint_path}")
-                
-                # Log best metrics to wandb
+                }, best_path)
+                print(f"✓ Saved best model (mIoU: {self.best_val_iou:.4f}) to {best_path}")
+
                 if self.config['use_wandb']:
                     wandb.log({
                         'best/epoch': epoch,
                         'best/val_iou': self.best_val_iou,
                         'best/val_accuracy': val_metrics['overall_accuracy']
                     })
-            
-            # Save regular checkpoint
+
+            # ── Save periodic checkpoint ───────────────────────────────────
             if epoch % self.config['save_every'] == 0:
-                checkpoint_path = self.output_dir / f"checkpoint_epoch_{epoch}.pth"
+                ckpt_path = self.output_dir / f"checkpoint_epoch_{epoch}.pth"
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
@@ -1143,29 +1431,31 @@ class Trainer:
                     'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
                     'val_iou': val_metrics['mean_iou'],
                     'config': self.config
-                }, checkpoint_path)
-        
-        # Load best model for testing
+                }, ckpt_path)
+                print(f"✓ Saved checkpoint (epoch {epoch}) to {ckpt_path}")
+
+        # ------------------------------------------------------------------ #
+        #  Test with best model                                                #
+        # ------------------------------------------------------------------ #
         if self.best_model_state:
             self.model.load_state_dict(self.best_model_state)
-        
-        # Test on test set
+
         print(f"\n{'='*60}")
         print("Testing on test set with best model")
         print(f"{'='*60}")
         test_metrics = self.validate(test_loader, epoch, mode='test')
         history['test_metrics'] = test_metrics
-        
+
         print(f"\n📊 FINAL TEST RESULTS:")
-        print(f"  Mean IoU:        {test_metrics['mean_iou']:.4f}")
-        print(f"  Mean F1 Score:   {test_metrics['mean_f1']:.4f}")
-        print(f"  Overall Accuracy: {test_metrics['overall_accuracy']:.4f}")
-        print(f"  Kappa:           {test_metrics['kappa']:.4f}")
-        print(f"  Mean Precision:  {test_metrics['mean_precision']:.4f}")
-        print(f"  Mean Recall:     {test_metrics['mean_recall']:.4f}")
+        print(f"  Mean IoU:          {test_metrics['mean_iou']:.4f}")
+        print(f"  Mean F1 Score:     {test_metrics['mean_f1']:.4f}")
+        print(f"  Overall Accuracy:  {test_metrics['overall_accuracy']:.4f}")
+        print(f"  Kappa:             {test_metrics['kappa']:.4f}")
+        print(f"  Mean Precision:    {test_metrics['mean_precision']:.4f}")
+        print(f"  Mean Recall:       {test_metrics['mean_recall']:.4f}")
         print(f"  Freq Weighted IoU: {test_metrics['freq_weighted_iou']:.4f}")
-        
-        # Save final model
+
+        # ── Save final model ───────────────────────────────────────────────
         final_model_path = self.output_dir / "final_model.pth"
         torch.save({
             'model_state_dict': self.model.state_dict(),
@@ -1173,63 +1463,61 @@ class Trainer:
             'test_metrics': test_metrics,
             'history': history
         }, final_model_path)
-        
-        # Save test metrics and history
+
+        # ── Save metrics and history ───────────────────────────────────────
         metrics_path = self.output_dir / "test_metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(test_metrics, f, indent=2)
-        
+
         history_path = self.output_dir / "training_history.json"
         with open(history_path, 'w') as f:
             json.dump(history, f, indent=2)
-        
-        # Save final configuration with results
+
+        # ── Save final config with results ─────────────────────────────────
         final_config_path = self.output_dir / "final_config.txt"
         with open(final_config_path, 'w') as f:
             self._write_config_txt(f, with_model_info=True)
-            f.write("\n" + "="*80 + "\n")
+            f.write("\n" + "=" * 80 + "\n")
             f.write("FINAL RESULTS\n")
-            f.write("="*80 + "\n\n")
-            f.write(f"Best Validation IoU: {self.best_val_iou:.4f}\n")
-            f.write(f"Test Mean IoU: {test_metrics['mean_iou']:.4f}\n")
-            f.write(f"Test Overall Accuracy: {test_metrics['overall_accuracy']:.4f}\n")
-            f.write(f"Test Kappa: {test_metrics['kappa']:.4f}\n")
-            f.write(f"Training Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        
-        # Log final test metrics to wandb
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Best Validation IoU:  {self.best_val_iou:.4f}\n")
+            f.write(f"Test Mean IoU:        {test_metrics['mean_iou']:.4f}\n")
+            f.write(f"Test Overall Accuracy:{test_metrics['overall_accuracy']:.4f}\n")
+            f.write(f"Test Kappa:           {test_metrics['kappa']:.4f}\n")
+            f.write(f"Training Completed:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        # ── WandB final logging ────────────────────────────────────────────
         if self.config['use_wandb']:
             wandb.log({
-                'test/final_iou': test_metrics['mean_iou'],
-                'test/final_f1': test_metrics['mean_f1'],
+                'test/final_iou':      test_metrics['mean_iou'],
+                'test/final_f1':       test_metrics['mean_f1'],
                 'test/final_accuracy': test_metrics['overall_accuracy'],
-                'test/final_kappa': test_metrics['kappa'],
-                'test/final_precision': test_metrics['mean_precision'],
-                'test/final_recall': test_metrics['mean_recall']
+                'test/final_kappa':    test_metrics['kappa'],
+                'test/final_precision':test_metrics['mean_precision'],
+                'test/final_recall':   test_metrics['mean_recall']
             })
-            
-            # Save model artifact to wandb
+
             artifact = wandb.Artifact(
                 name=f"{self.config['model_name']}_{self.config['sensor_name']}",
                 type="model",
                 description=f"Best model trained on {self.config['sensor_name']} data",
                 metadata={
-                    'test_iou': test_metrics['mean_iou'],
+                    'test_iou':      test_metrics['mean_iou'],
                     'test_accuracy': test_metrics['overall_accuracy'],
-                    'best_val_iou': self.best_val_iou,
-                    'epochs': self.config['epochs']
+                    'best_val_iou':  self.best_val_iou,
+                    'epochs':        self.config['epochs']
                 }
             )
             artifact.add_file(str(final_model_path))
             wandb.log_artifact(artifact)
-            
             wandb.finish()
-        
+
         print(f"\n✅ Training completed!")
-        print(f"   Model saved to: {final_model_path}")
+        print(f"   Model saved to:   {final_model_path}")
         print(f"   Metrics saved to: {metrics_path}")
-        print(f"   Config saved to: {final_config_path}")
-        print(f"   Best validation IoU: {self.best_val_iou:.4f}")
-        
+        print(f"   Config saved to:  {final_config_path}")
+        print(f"   Best val mIoU:    {self.best_val_iou:.4f}")
+
         return test_metrics
 
 def parse_args():
@@ -1247,10 +1535,15 @@ def load_config_from_yaml(config_path):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    # Normalize paths to use forward slashes
+    # Get patch size
+    patch_size = config.get('image_patch_size', 128)
+    
+    # Expand placeholders in paths
     path_keys = ['data_root', 'dataset_config', 'output_dir']
     for key in path_keys:
-        if key in config:
+        if key in config and isinstance(config[key], str):
+            # Replace {patch_size} with actual value
+            config[key] = config[key].format(patch_size=patch_size)
             # Convert backslashes to forward slashes
             config[key] = config[key].replace('\\', '/')
     
@@ -1303,7 +1596,7 @@ def main():
     required_fields = ['model_name', 'sensor_name', 'label_type', 
                        'data_root', 'dataset_config', 'output_dir',
                        'epochs', 'batch_size', 'learning_rate']
-    
+
     for field in required_fields:
         if field not in config:
             raise ValueError(f"Required field '{field}' not found in config file")
@@ -1362,7 +1655,11 @@ def main():
     trainer = Trainer(config)
     test_metrics = trainer.train()
     
+    End= time.time() 
+    print(f"\nTotal training time: {(End - start) / 60:.2f} minutes")
     return test_metrics
 
 if __name__ == '__main__':
+
     main()
+    

@@ -1,0 +1,126 @@
+==========================================================================================
+MULTI-SENSOR PATCH DATASET STATISTICS - UNFILTERED LABELS
+==========================================================================================
+
+DATASET CONFIGURATION:
+----------------------------------------
+Window size: 128x128
+Purity threshold: 50%
+Patches per class (target): 500
+Selection method: stratified
+Number of classes: 13
+
+OVERALL STATISTICS:
+----------------------------------------
+TRAIN :   3091 patches,      26,718,774 pixels
+VAL   :    661 patches,       5,870,781 pixels
+TEST  :    667 patches,       5,697,446 pixels
+
+TOTAL:   4419 patches,      38,287,001 pixels
+
+GROUND TRUTH SUMMARY:
+----------------------------------------
+Total pixels in study area: 1,159,123,680
+Percentage of GT covered by patches: 3.3031%
+
+
+% of GT (Percentage of Ground Truth for that Class)
+This shows what percentage of that specific class's total pixels in the full ground truth image are contained in your patches.
+
+% Selected (Percentage of Total Dataset)
+This shows what percentage of your entire patch dataset (all classes combined) is made up of this specific class.
+==========================================================================================
+PER-CLASS DETAILED STATISTICS
+==========================================================================================
+
+Class Name                          ID    Split    Patches    Pixels          % of GT    % Selected  
+---------------------------------------------------------------------------------------------------------
+Temperate needleleaf forest         0     GT       -          159,803,790     13.79%    -           
+                                          train    350        3,155,712       1.97%    0.2722%
+                                          val      75         680,514         0.43%    0.0587%
+                                          test     75         643,866         0.40%    0.0555%
+
+Sub-polar taiga forest              1     GT       -          838,332         0.07%    -           
+                                          train    6          41,479          4.95%    0.0036%
+                                          val      1          7,454           0.89%    0.0006%
+                                          test     2          12,780          1.52%    0.0011%
+
+Temperate broadleaf forest          2     GT       -          8,096,559       0.70%    -           
+                                          train    69         417,614         5.16%    0.0360%
+                                          val      14         99,707          1.23%    0.0086%
+                                          test     16         95,923          1.18%    0.0083%
+
+Mixed forest                        3     GT       -          115,385,605     9.95%    -           
+                                          train    350        2,952,617       2.56%    0.2547%
+                                          val      75         625,426         0.54%    0.0540%
+                                          test     75         624,103         0.54%    0.0538%
+
+Temperate shrubland                 4     GT       -          52,677,271      4.54%    -           
+                                          train    350        2,846,646       5.40%    0.2456%
+                                          val      75         594,463         1.13%    0.0513%
+                                          test     75         612,990         1.16%    0.0529%
+
+Temperate grassland                 5     GT       -          97,934,315      8.45%    -           
+                                          train    350        3,031,748       3.10%    0.2616%
+                                          val      75         663,124         0.68%    0.0572%
+                                          test     75         629,742         0.64%    0.0543%
+
+Polar grassland-lichen              6     GT       -          5,590           0.00%    -           
+
+Wetland                             7     GT       -          80,533,115      6.95%    -           
+                                          train    350        2,781,573       3.45%    0.2400%
+                                          val      75         624,277         0.78%    0.0539%
+                                          test     75         603,755         0.75%    0.0521%
+
+Cropland                            8     GT       -          131,482,506     11.34%    -           
+                                          train    350        3,481,784       2.65%    0.3004%
+                                          val      75         809,748         0.62%    0.0699%
+                                          test     75         784,829         0.60%    0.0677%
+
+Barren lands                        9     GT       -          15,661,366      1.35%    -           
+                                          train    350        3,217,958       20.55%    0.2776%
+                                          val      75         719,713         4.60%    0.0621%
+                                          test     75         677,922         4.33%    0.0585%
+
+Urban                               10    GT       -          14,898,109      1.29%    -           
+                                          train    170        1,681,370       11.29%    0.1451%
+                                          val      36         348,154         2.34%    0.0300%
+                                          test     38         384,558         2.58%    0.0332%
+
+Water                               11    GT       -          32,752,754      2.83%    -           
+                                          train    350        2,825,223       8.63%    0.2437%
+                                          val      75         632,381         1.93%    0.0546%
+                                          test     75         568,712         1.74%    0.0491%
+
+Snow/ice                            12    GT       -          962,618         0.08%    -           
+                                          train    46         285,050         29.61%    0.0246%
+                                          val      10         65,820          6.84%    0.0057%
+                                          test     11         58,266          6.05%    0.0050%
+
+
+==========================================================================================
+SUMMARY BY SPLIT
+==========================================================================================
+
+Split      Total Patches   Total Pixels    % of Dataset
+------------------------------------------------------------
+train      3091            26,718,774      69.79%
+val        661             5,870,781       15.33%
+test       667             5,697,446       14.88%
+
+==========================================================================================
+CLASS DISTRIBUTION IN TRAINING SET
+==========================================================================================
+
+Cropland                            ██████████████████████████████████████████████████ 3,481,784
+Barren lands                        ██████████████████████████████████████████████ 3,217,958
+Temperate needleleaf forest         █████████████████████████████████████████████ 3,155,712
+Temperate grassland                 ███████████████████████████████████████████ 3,031,748
+Mixed forest                        ██████████████████████████████████████████ 2,952,617
+Temperate shrubland                 ████████████████████████████████████████ 2,846,646
+Water                               ████████████████████████████████████████ 2,825,223
+Wetland                             ███████████████████████████████████████ 2,781,573
+Urban                               ████████████████████████ 1,681,370
+Temperate broadleaf forest          █████ 417,614
+Snow/ice                            ████ 285,050
+Sub-polar taiga forest               41,479

@@ -1,0 +1,62 @@
+# Cluster-MambaHSI Configuration for Sentinel-2 Filtered Data
+# python train_cluster_mamba.py --config config/cluster_mamba_sentinel2.yaml
+
+# Model and dataset
+model_name: "cluster_MambaHSI"
+sensor_name: "sentinel2"
+label_type: "filtered"  # Using filtered labels with background
+num_classes: 13
+image_patch_size: 224
+
+# Cluster Mamba specific parameters
+hidden_dim: 16
+token_num: 4
+group_num: 4
+sparsity_ratio: 0.7
+attention_heads: 4
+selection_mode: "cluster"
+cluster_loss_weight: 0.05  # Weight for cluster regularization loss
+
+# Paths
+data_root: "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/train_val_test_patches/patches"
+clusters_root: "/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/clustered_datasets"
+dataset_config: "./train_val_test_patches/multisensor_dataset_config.json"
+output_dir: "./experiments_cluster_mamba"
+
+# Training hyperparameters
+epochs: 100
+batch_size: 4  # MUST BE 1 for cluster_MambaHSI
+learning_rate: 0.0003
+weight_decay: 0.00001
+
+# Add these to your config file
+warmup_epochs: 5
+tta_enabled: true
+tta_frequency: 5  # Run TTA every N epochs
+tta_augmentations: ["hflip", "vflip", "both"]  # Which augmentations to use
+
+# Loss and optimizer
+loss_fn: "cross_entropy"  # Will be combined with cluster loss
+optimizer: "adamw"
+scheduler: "warmrestarts" # warmrestarts # cosine
+ignore_index: -1  # Background is -1 in filtered labels
+# Add learning rate schedule
+lr_decay_factor: 0.95
+lr_patience: 3
+
+# Add gradient clipping
+grad_clip: 1.0
+
+# Training settings
+use_amp: false
+num_workers: 4  # Set to 0 to avoid multiprocessing issues during development
+pin_memory: true
+save_every: 10
+mixed_precision: false
+# Weights & Biases
+use_wandb: true
+wandb_project: "AlphaEarth_Alberta_2020" 
+wandb_entity: "saeid_taleghani"
+
+# Random seed
+seed: 42
