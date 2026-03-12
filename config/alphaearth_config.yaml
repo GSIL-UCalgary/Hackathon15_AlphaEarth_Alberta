@@ -8,7 +8,8 @@
 # python scene_classification_saskachewan.py --sensor_name alphaearth --model_name BasicUNet
 
 # Model and dataset
-# models: SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT, mHC_spec_spa_mamba, physical_mhc_mamba
+# models: SwinUNet, BasicUNet, HRNet, MambaHSISeg, mHC_cluster, ssrn, convnext, OBIA_Mamba, ViT,
+# mHC_spec_spa_mamba, physical_mhc_mamba, ParallelGraphMHCSegNet
 # cluster_MambaHSI
 
 

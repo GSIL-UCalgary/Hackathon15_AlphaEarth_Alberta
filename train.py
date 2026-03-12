@@ -568,19 +568,48 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
     # --------------------------------------------------
     # Basic UNet
     # --------------------------------------------------
+    # elif model_name == 'BasicUNet':
+    #     basic_config = {
+    #         'in_channels': input_channels,
+    #         'num_classes': num_classes,
+    #         'stem_dim': 32,
+    #         'stem_kernel': 3,
+    #         'stem_padding': 1,
+    #         'stem_downsampling': False,
+    #         'dims': [32, 64, 128, 256],
+    #         'depths': [1, 1, 2, 1],
+    #     }
+    #     return BasicUNet(basic_config)
     elif model_name == 'BasicUNet':
-        basic_config = {
-            'in_channels': input_channels,
-            'num_classes': num_classes,
-            'stem_dim': 32,
-            'stem_kernel': 3,
-            'stem_padding': 1,
-            'stem_downsampling': False,
-            'dims': [32, 64, 128, 256],
-            'depths': [1, 1, 2, 1],
-        }
-        return BasicUNet(basic_config)
+        # Define all hardcoded values here
+        in_channels = input_channels
+        num_classes = num_classes
+        stem_dim    = 32
+        enc_dims    = [32, 64, 128, 170]   # changed: 128 -> 170
+        bridge_dim  = 340                  # changed: 256 -> 340
+        dec_dims    = [170, 128, 64, 32]   # changed: [128, 64, 32, 32] -> [170, 128, 64, 32]
 
+        print(f"BasicUNet config - in_channels: {in_channels}, stem_dim: {stem_dim}, "
+            f"enc_dims: {enc_dims}, bridge_dim: {bridge_dim}")
+
+        # Store them in hyperparameters dict
+        model_hyperparameters = {
+            'BasicUNet_in_channels' : in_channels,
+            'BasicUNet_num_classes' : num_classes,
+            'BasicUNet_stem_dim'    : stem_dim,
+            'BasicUNet_enc_dims'    : enc_dims,
+            'BasicUNet_bridge_dim'  : bridge_dim,
+            'BasicUNet_dec_dims'    : dec_dims,
+        }
+
+        basic_config = {
+            'in_channels' : in_channels,
+            'num_classes' : num_classes,
+            'stem_dim'    : stem_dim,
+        }
+
+        model = BasicUNet(basic_config)
+        return model, model_hyperparameters
     # --------------------------------------------------
     # Other models (unchanged)
     # --------------------------------------------------

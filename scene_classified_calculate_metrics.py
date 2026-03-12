@@ -443,9 +443,11 @@ def main():
     )
     parser.add_argument(
         "--ground_truth",
-        # default="/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/"
-        #         "GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif",
-        default=f"/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/filtered_ground_truth/LC_filtered_{filter_window_size}x{filter_window_size}.tif"
+        default="/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/"
+                 "GroundTruth_Landsat_Canada/landcover-2020-classification_CLIPPED_ALBERTA_REMAPPED.tif",
+        #default=f"/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/filtered_ground_truth/LC_filtered_{filter_window_size}x{filter_window_size}.tif"
+        #default=f"/beluga/Hackathon15_AlphaEarth_Alberta/Hackathon15_AlphaEarth_Alberta/filtered_ground_truth/LC_filtered_{filter_window_size}x{filter_window_size}_with_urban.tif"
+
     )
     parser.add_argument("--model_name",  required=True)
     parser.add_argument("--sensor_name", required=True,
@@ -512,7 +514,7 @@ def main():
 
             # ── Save outputs ──────────────────────────────────────────────────
             out_stem = tif_path.stem + "_metrics"
-            out_dir  = tif_path.parent.parent / f"full_{filter_window_size}x{filter_window_size}filtered_scene_metrics"
+            out_dir  = tif_path.parent.parent / f"full_scene_metrics"
             save_txt( metrics, out_dir / out_stem,
                       args.model_name, args.sensor_name, tif_path.name)
             save_json(metrics, out_dir / out_stem,
