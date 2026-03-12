@@ -26,10 +26,39 @@ import time
 import pdb
 # Import your models
 from models import (
+<<<<<<< HEAD
+    MIMUNet,
+    FocalUNet,
+    SepViTUNet,
+    SwinUNetWrapper, 
+    CATUNet, 
+    TwinsUNet, 
+    BasicUNet, 
+    HRNetWrapper,
+    MambaHSISegWrapper,
+    SSRNForSegmentation,
+    ConvNeXtForSegmentation, 
+    Global_superxiel_model,
+    SimpleViTSegmentation,
+    ImageHyperConnectionTransformer,
+    ImageHyperConnectionTransformer_spec_spa,
+    ImageHyperConnectionTransformer_mhc,
+    MambaHSI, # ClusterMamba_aboundance
+    ParallelGraphMHCSegNet
+=======
     MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model, ViTForSegmentation
+    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, 
+    SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model, ViTForSegmentation, AttentionDeepLabV3Plus
+>>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
 )
 
+start= time.time()
+# Enable memory optimization
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+# Optional: Reduce TensorFlow memory usage if you have it installed
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Set random seeds for reproducibility
 def set_seed(seed=42):
     random.seed(seed)
@@ -474,7 +503,35 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
                                       d_conv=6, 
                                       in_channel=input_channels,
         )
+    # --------------------------------------------------
+    # ViT
+    # --------------------------------------------------
+<<<<<<< HEAD
+    if model_name == 'ViT':
+        # Define all hardcoded values here
+        vit_img_size = 224
+        vit_patch_size = 7
+        vit_depth = 3
+        vit_num_heads = 4
+        vit_mlp_ratio = 4.0
+        vit_dropout = 0.1
+        vit_embed_dim = training_config.get('hidden_dim', 384)
+
+        # Store them in hyperparameters dict
+        model_hyperparameters = {
+            'vit_img_size': vit_img_size,
+            'vit_patch_size': vit_patch_size,
+            'vit_depth': vit_depth,
+            'vit_num_heads': vit_num_heads,
+            'vit_mlp_ratio': vit_mlp_ratio,
+            'vit_dropout': vit_dropout,
+            'vit_embed_dim': vit_embed_dim
+        }
+
+
+=======
     elif model_name == 'ViT':
+>>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
         vit_config = {
             'img_size': vit_img_size,
             'in_chans': input_channels,
@@ -489,7 +546,21 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
         model = SimpleViTSegmentation(**vit_config)
         return model, model_hyperparameters
     # --------------------------------------------------
+<<<<<<< HEAD
+    # MambaHSISeg 
+=======
+    # Tseg
+    # --------------------------------------------------
+    elif model_name == 'Tseg':
+        return AttentionDeepLabV3Plus(
+            num_classes=num_classes,
+            in_channels=input_channels,
+            backbone='resnet50',
+            pretrained=True
+        )
+    # --------------------------------------------------
     # MambaHSISeg (new addition)
+>>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
     # --------------------------------------------------
     elif model_name == 'MambaHSISeg':
         mamba_config = {
