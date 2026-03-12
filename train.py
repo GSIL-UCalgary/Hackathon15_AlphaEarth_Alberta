@@ -26,7 +26,6 @@ import time
 import pdb
 # Import your models
 from models import (
-<<<<<<< HEAD
     MIMUNet,
     FocalUNet,
     SepViTUNet,
@@ -45,11 +44,6 @@ from models import (
     ImageHyperConnectionTransformer_mhc,
     MambaHSI, # ClusterMamba_aboundance
     ParallelGraphMHCSegNet
-=======
-    MIMUNet, FocalUNet, SepViTUNet, SwinUNetWrapper, 
-    CATUNet, TwinsUNet, BasicUNet, HRNetWrapper,MambaHSISegWrapper, ImageHyperConnectionTransformerWrapper, 
-    SSRNForSegmentation, ConvNeXtForSegmentation, Global_superxiel_model, ViTForSegmentation, AttentionDeepLabV3Plus
->>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
 )
 
 start= time.time()
@@ -506,7 +500,6 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
     # --------------------------------------------------
     # ViT
     # --------------------------------------------------
-<<<<<<< HEAD
     if model_name == 'ViT':
         # Define all hardcoded values here
         vit_img_size = 224
@@ -528,10 +521,6 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
             'vit_embed_dim': vit_embed_dim
         }
 
-
-=======
-    elif model_name == 'ViT':
->>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
         vit_config = {
             'img_size': vit_img_size,
             'in_chans': input_channels,
@@ -546,21 +535,7 @@ def create_model(model_name, sensor_name, dataset_config, training_config):
         model = SimpleViTSegmentation(**vit_config)
         return model, model_hyperparameters
     # --------------------------------------------------
-<<<<<<< HEAD
-    # MambaHSISeg 
-=======
-    # Tseg
-    # --------------------------------------------------
-    elif model_name == 'Tseg':
-        return AttentionDeepLabV3Plus(
-            num_classes=num_classes,
-            in_channels=input_channels,
-            backbone='resnet50',
-            pretrained=True
-        )
-    # --------------------------------------------------
-    # MambaHSISeg (new addition)
->>>>>>> 64040deaa131247df5240dbcfd55693b79946b81
+    # MambaHSISeg
     # --------------------------------------------------
     elif model_name == 'MambaHSISeg':
         mamba_config = {
